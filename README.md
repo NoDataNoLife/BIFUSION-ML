@@ -5,15 +5,26 @@ BIFUSION AI 모델 서빙 서버 (FastAPI + Celery)
 ## 구조
 
 ```
-app/
-├── routers/         # API 엔드포인트 (augmentation / training / inference)
-├── workers/         # Celery Worker (역할별 큐 분리)
-├── schemas/         # Pydantic 요청/응답 모델
-├── services/        # 비즈니스 로직
-└── core/
-    ├── config.py        # 환경변수
-    ├── celery_app.py    # Celery 설정
-    └── model_loader.py  # 모델 로더 (local | s3)
+BIFUSION-ML/
+├── app/
+│   ├── main.py                      # FastAPI 진입점
+│   ├── routers/                     # 역할별 API 엔드포인트
+│   │   ├── augmentation.py          # POST /run, GET /{job_id}
+│   │   ├── training.py
+│   │   └── inference.py
+│   ├── workers/                     # Celery Worker (큐 분리됨)
+│   │   ├── augmentation_worker.py   # -Q augmentation
+│   │   ├── training_worker.py       # -Q training
+│   │   └── inference_worker.py      # -Q inference
+│   ├── schemas/                     # Pydantic 요청/응답 모델
+│   ├── core/
+│   │   ├── config.py                # 환경변수
+│   │   ├── celery_app.py            # Celery 설정
+│   │   └── model_loader.py          # local | s3 추상화
+├── docker-compose.yml
+├── Dockerfile
+├── .env.example
+└── requirements.txt
 ```
 
 ## 로컬 실행
