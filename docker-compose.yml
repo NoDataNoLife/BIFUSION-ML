@@ -1,0 +1,47 @@
+services:
+  fastapi:
+    build: .
+    ports:
+      - "8000:8000"
+    env_file:
+      - .env
+    volumes:
+      - ./models:/app/models
+    depends_on:
+      - redis
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+
+  worker-augmentation:
+    build: .
+    env_file:
+      - .env
+    volumes:
+      - ./models:/app/models
+    depends_on:
+      - redis
+    command: celery -A app.core.celery_app.celery_app worker -Q augmentation --concurrency=1 --loglevel=info
+
+  worker-training:
+    build: .
+    env_file:
+      - .env
+    volumes:
+      - ./models:/app/models
+    depends_on:
+      - redis
+    command: celery -A app.core.celery_app.celery_app worker -Q training --concurrency=1 --loglevel=info
+
+  worker-inference:
+    build: .
+    env_file:
+      - .env
+    volumes:
+      - ./models:/app/models
+    depends_on:
+      - redis
+    command: celery -A app.core.celery_app.celery_app worker -Q inference --concurrency=1 --loglevel=info

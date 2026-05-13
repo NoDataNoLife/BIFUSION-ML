@@ -1,0 +1,21 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+.venv/
+venv/
+env/
+
+# Env
+.env
+
+# Models (용량 큰 파일)
+models/
+/tmp/models/
+
+# IDE
+.idea/
+.vscode/
+
+# Docker
+*.log
