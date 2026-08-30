@@ -5,17 +5,21 @@ __pycache__/
 .venv/
 venv/
 env/
+.pytest_cache/
 
 # Env
 .env
 
-# Models (용량 큰 파일)
+# Models & Storage (용량 큰 파일)
 models/
+storage/
 /tmp/models/
+/tmp/datasets/
 
 # IDE
 .idea/
 .vscode/
+.DS_Store
 
-# Docker
+# Docker & Logs
 *.log
