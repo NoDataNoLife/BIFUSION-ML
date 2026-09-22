@@ -1,25 +1,10 @@
-import os
-import shutil
-from pathlib import Path
 import numpy as np
-import pytest
+from pathlib import Path
 from PIL import Image
 
-from app.core.config import settings
-from app.services.diffusion_service import DDPMService
-from app.services.protonet_service import ProtoNetService, ProtoEncoderConv4
+from app.services.protonet_service import ProtoNetService
 from app.services.storage_service import LocalStorageService
 from app.services.image_utils import base64_to_pil, pil_to_base64, create_synthetic_noise_image
-from scripts.create_dummy_checkpoint import create_dummy_checkpoint
-
-
-@pytest.fixture(scope="session", autouse=True)
-def setup_dummy_model():
-    """테스트 실행 전 더미 모델 생성"""
-    model_path = Path("models/best_model.pt")
-    if not model_path.exists():
-        create_dummy_checkpoint(str(model_path), image_size=128)
-    yield
 
 
 def test_storage_service(tmp_path):
@@ -36,30 +21,6 @@ def test_image_utils():
     b64 = pil_to_base64(img)
     recovered = base64_to_pil(b64)
     assert recovered.size == (128, 128)
-
-
-def test_diffusion_service_generation():
-    service = DDPMService(model_name="best_model.pt", image_size=128, timesteps=50)
-    progresses = []
-
-    def on_progress(step, total, pct):
-        progresses.append(pct)
-
-    samples = service.generate_samples(
-        num_samples=2,
-        batch_size=2,
-        sampling_steps=5,  # 테스트 속도를 위해 5스텝만
-        seed=42,
-        progress_callback=on_progress,
-    )
-
-    assert len(samples) == 2
-    assert samples[0].size == (128, 128)
-    assert len(progresses) > 0
-    assert progresses[-1] == 100
-
-    grid = service.create_preview_grid(samples, nrow=2)
-    assert grid.size[0] > 0 and grid.size[1] > 0
 
 
 def test_protonet_service(tmp_path):

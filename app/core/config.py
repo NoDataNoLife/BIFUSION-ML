@@ -9,8 +9,16 @@ class Settings(BaseSettings):
     # AI Model & Hardware
     DEVICE: str = "auto"  # auto | cuda | cpu | mps
     IMAGE_SIZE: int = 128
-    DEFAULT_TIMESTEPS: int = 500
-    DEFAULT_MODEL_NAME: str = "best_model.pt"
+    CHANNELS: int = 1                 # 1=grayscale, 3=RGB (데이터셋/생성 출력 채널)
+
+    # Medfusion (유일한 생성 백엔드)
+    MEDFUSION_CODE_PATH: str = r"C:\Users\tjdgk\Desktop\My\PBL\medfusion_code"
+    MEDFUSION_WEIGHTS_DIR: str = r"C:\Users\tjdgk\Desktop\My\PBL\medfusion_weights"
+    MEDFUSION_DIFFUSION_CKPT: str = "runs/chest_diffusion/last.ckpt"
+    MEDFUSION_VAE_CKPT: str = "runs/2022_12_12_133315_chest_vaegan/last_vae.ckpt"
+    MEDFUSION_LATENT_SHAPE: str = "8,32,32"
+    MEDFUSION_GUIDANCE_SCALE: float = 4.0
+    MEDFUSION_STEPS: int = 50
 
     # Model Loader
     MODEL_LOADER: str = "local"  # local | s3

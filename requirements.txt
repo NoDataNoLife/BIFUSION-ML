@@ -17,3 +17,13 @@ tqdm>=4.66.0
 opencv-python-headless>=4.8.0
 scikit-learn>=1.3.0
 pytest>=7.4.0
+
+# Medfusion (유일한 생성 백엔드) — medical_diffusion 런타임 의존성
+# medical_diffusion 패키지 자체는 MEDFUSION_CODE_PATH로 sys.path에 추가됨(streamlit은 스텁이라 불필요)
+pytorch-lightning>=2.0
+monai>=1.2
+einops>=0.6
+pytorch_msssim>=1.0
+torchmetrics>=1.0
+torchio>=0.18
+lpips>=0.1.4

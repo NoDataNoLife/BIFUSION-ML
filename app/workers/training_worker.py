@@ -49,13 +49,11 @@ def run_training(self, request: dict) -> Dict[str, Any]:
             break
 
     if not npz_path:
-        import numpy as np
-        tmp_dir = Path("/tmp/datasets") / dataset_id
-        tmp_dir.mkdir(parents=True, exist_ok=True)
-        npz_path = str(tmp_dir / "support_aug.npz")
-        X = np.random.rand(30, 1, 128, 128).astype(np.float32)
-        y = np.array([0] * 15 + [1] * 15, dtype=np.int64)
-        np.savez_compressed(npz_path, x=X, y=y)
+        # 데이터셋 미발견 시 랜덤 노이즈로 학습해 "성공"으로 위장하지 않도록 명시적 실패
+        raise FileNotFoundError(
+            f"Dataset not found for dataset_id={dataset_id}. "
+            f"Searched: {[str(p) for p in possible_paths]}"
+        )
 
     # 2. 임시 모델 저장 경로
     out_model_dir = Path("/tmp/models") / job_id

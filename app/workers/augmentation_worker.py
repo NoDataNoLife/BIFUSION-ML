@@ -6,7 +6,8 @@ import numpy as np
 from PIL import Image
 
 from app.core.celery_app import celery_app
-from app.services.diffusion_service import DDPMService
+from app.core.config import settings
+from app.services.medfusion_service import MedfusionService
 from app.services.storage_service import get_storage_service
 from app.services.image_utils import base64_to_pil, create_synthetic_noise_image
 
@@ -43,28 +44,31 @@ def run_augmentation(self, request: dict) -> Dict[str, Any]:
     normal_raw = request.get("normal_images_base64", [])
     anomaly_raw = request.get("anomaly_images_base64", [])
 
+    ch = int(settings.CHANNELS)              # 1=grayscale, 3=RGB
+    pil_mode = "L" if ch == 1 else "RGB"
+
     normal_imgs: List[Image.Image] = []
     anomaly_imgs: List[Image.Image] = []
 
     for b64 in normal_raw:
         try:
-            normal_imgs.append(base64_to_pil(b64).resize((128, 128)))
+            normal_imgs.append(base64_to_pil(b64).convert(pil_mode).resize((128, 128)))
         except Exception:
             pass
 
     for b64 in anomaly_raw:
         try:
-            anomaly_imgs.append(base64_to_pil(b64).resize((128, 128)))
+            anomaly_imgs.append(base64_to_pil(b64).convert(pil_mode).resize((128, 128)))
         except Exception:
             pass
 
     if not normal_imgs:
-        normal_imgs = [create_synthetic_noise_image(128) for _ in range(5)]
+        normal_imgs = [create_synthetic_noise_image(128).convert(pil_mode) for _ in range(5)]
     if not anomaly_imgs:
-        anomaly_imgs = [create_synthetic_noise_image(128) for _ in range(5)]
+        anomaly_imgs = [create_synthetic_noise_image(128).convert(pil_mode) for _ in range(5)]
 
-    # 2. DDPM 생성 서비스 초기화
-    ddpm = DDPMService(model_name=model_name, image_size=128, timesteps=500)
+    # 2. 생성 서비스 초기화 (Medfusion)
+    generator = MedfusionService(image_size=128)
 
     # 3. 진행률 콜백 정의
     def on_progress(step: int, total: int, pct: int):
@@ -83,7 +87,7 @@ def run_augmentation(self, request: dict) -> Dict[str, Any]:
     total_to_generate = num_samples_per_class * 2
     safe_update_state(state="RUNNING", meta={"progress": 10, "message": "Running diffusion sampling..."})
 
-    synthetic_images = ddpm.generate_samples(
+    synthetic_images = generator.generate_samples(
         num_samples=total_to_generate,
         batch_size=4,
         sampling_steps=sampling_steps,
@@ -103,18 +107,22 @@ def run_augmentation(self, request: dict) -> Dict[str, Any]:
     ids = []
 
     for idx, img in enumerate(all_normal):
-        arr = np.array(img, dtype=np.float32) / 255.0
+        arr = np.array(img.convert(pil_mode), dtype=np.float32) / 255.0
         xs.append(arr)
         ys.append(0)  # 0: Normal
         ids.append(f"normal_{idx:04d}")
 
     for idx, img in enumerate(all_anomaly):
-        arr = np.array(img, dtype=np.float32) / 255.0
+        arr = np.array(img.convert(pil_mode), dtype=np.float32) / 255.0
         xs.append(arr)
         ys.append(1)  # 1: Anomaly
         ids.append(f"anomaly_{idx:04d}")
 
-    X_arr = np.stack(xs)[:, None, :, :]  # (N, 1, 128, 128)
+    X_arr = np.stack(xs)
+    if ch == 1:
+        X_arr = X_arr[:, None, :, :]          # (N, 1, 128, 128)
+    else:
+        X_arr = np.transpose(X_arr, (0, 3, 1, 2))  # (N, 3, 128, 128)
     y_arr = np.array(ys, dtype=np.int64)
     ids_arr = np.array(ids, dtype=object)
 
@@ -125,7 +133,7 @@ def run_augmentation(self, request: dict) -> Dict[str, Any]:
     dataset_url = storage.save_bytes(npz_buf.getvalue(), npz_key, content_type="application/octet-stream")
 
     # 7. 미리보기 그리드 이미지 생성 및 저장
-    preview_img = ddpm.create_preview_grid(synthetic_images[:8], nrow=4)
+    preview_img = generator.create_preview_grid(synthetic_images[:8], nrow=4)
     preview_key = f"datasets/{job_id}/preview_grid.png"
     preview_url = storage.save_image(preview_img, preview_key)
 
@@ -137,7 +145,7 @@ def run_augmentation(self, request: dict) -> Dict[str, Any]:
         "num_normal_total": len(all_normal),
         "num_anomaly_total": len(all_anomaly),
         "num_synthetic_generated": total_to_generate,
-        "spec": {"size": [128, 128], "channels": 1, "normalize": "0-1"},
+        "spec": {"size": [128, 128], "channels": ch, "normalize": "0-1"},
     }
     meta_key = f"datasets/{job_id}/meta.json"
     storage.save_bytes(json.dumps(meta, indent=2).encode("utf-8"), meta_key, content_type="application/json")

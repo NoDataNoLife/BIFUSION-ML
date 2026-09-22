@@ -5,11 +5,10 @@ from PIL import Image
 
 from app.core.celery_app import celery_app
 from app.core.config import settings
-from app.services.diffusion_service import DDPMService
-from app.services.protonet_service import ProtoNetService, ProtoEncoderConv4
+from app.services.medfusion_service import MedfusionService
+from app.services.protonet_service import ProtoNetService
 from app.services.storage_service import get_storage_service
-from app.services.image_utils import base64_to_pil, create_synthetic_noise_image
-import torch
+from app.services.image_utils import base64_to_pil
 
 
 @celery_app.task(bind=True, name="app.workers.inference_worker.run_inference")
@@ -51,7 +50,12 @@ def run_inference(self, request: dict) -> Dict[str, Any]:
                 pass
 
         if not pil_images:
-            pil_images = [create_synthetic_noise_image(128)]
+            # 유효한 입력 이미지가 없으면 노이즈를 "진단"하지 않도록 명시적 실패
+            raise ValueError(
+                f"No valid input images to diagnose "
+                f"(received {len(images_raw)} entries, all failed to decode). "
+                f"Provide valid base64-encoded images."
+            )
 
         possible_model_paths = [
             Path(settings.LOCAL_STORAGE_DIR) / "models" / model_id / "best.pt",
@@ -66,13 +70,11 @@ def run_inference(self, request: dict) -> Dict[str, Any]:
                 break
 
         if not model_path:
-            tmp_model_dir = Path("/tmp/models") / "default"
-            tmp_model_dir.mkdir(parents=True, exist_ok=True)
-            model_path = str(tmp_model_dir / "best.pt")
-            if not Path(model_path).exists():
-                encoder = ProtoEncoderConv4(1, 64, 256)
-                protos = torch.randn(2, 256)
-                torch.save({"encoder_state_dict": encoder.state_dict(), "prototypes": protos}, model_path)
+            # 학습된 분류 모델이 없으면 랜덤 가중치로 "진단"하지 않도록 명시적 실패
+            raise FileNotFoundError(
+                f"Trained ProtoNet model not found for model_id={model_id}. "
+                f"Searched: {[str(p) for p in possible_model_paths]}"
+            )
 
         protonet = ProtoNetService()
         predictions = protonet.predict(model_checkpoint_path=model_path, images=pil_images)
@@ -89,14 +91,14 @@ def run_inference(self, request: dict) -> Dict[str, Any]:
         }
 
     # ==========================================
-    # 모드 2: DDPM 단독 이미지 생성
+    # 모드 2: Medfusion 단독 이미지 생성
     # ==========================================
     else:
         batch_size = request.get("batch_size", 4)
         sampling_steps = request.get("sampling_steps", 100)
         seed = request.get("seed")
 
-        ddpm = DDPMService(model_name=model_id, image_size=128, timesteps=500)
+        generator = MedfusionService(image_size=128)
 
         def on_progress(step: int, total: int, pct: int):
             safe_update_state(
@@ -109,7 +111,7 @@ def run_inference(self, request: dict) -> Dict[str, Any]:
                 },
             )
 
-        images = ddpm.generate_samples(
+        images = generator.generate_samples(
             num_samples=num_samples,
             batch_size=batch_size,
             sampling_steps=sampling_steps,
@@ -123,7 +125,7 @@ def run_inference(self, request: dict) -> Dict[str, Any]:
             url = storage.save_image(img, key)
             image_urls.append(url)
 
-        preview_img = ddpm.create_preview_grid(images[:8], nrow=4)
+        preview_img = generator.create_preview_grid(images[:8], nrow=4)
         preview_key = f"inferences/{job_id}/preview_grid.png"
         preview_url = storage.save_image(preview_img, preview_key)
 
