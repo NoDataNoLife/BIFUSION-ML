@@ -80,7 +80,7 @@ return JobResponse(job_id=..., status="FAILURE", progress=..., result=None, erro
 ### 3.1 개념 / 계층
 - 이전: `app/services/diffusion_service.py`가 흑백 1채널 3-레벨 `UNet2DModel(64,128,256)` DDPM을 자체 정의·샘플링.
 - 지금(2계층):
-  - **`bifusion` 패키지** — `bifusion.generate.medfusion` 에 실제 구현(`MedfusionConfig`, `MedfusionGenerator`, `generate_medfusion_samples`, `create_preview_grid`)이 있다. 사전학습 의료 **latent diffusion**(VAE + latent UNet)을 로드·샘플링. 이 패키지는 `Bifusion_pip-version-Med` 폴더에 있고 버전은 `0.4.0+medfusion`.
+  - **`bifusion` 패키지** — `bifusion.generate.medfusion` 에 실제 구현(`MedfusionConfig`, `MedfusionGenerator`, `generate_medfusion_samples`, `create_preview_grid`)이 있다. 사전학습 의료 **latent diffusion**(VAE + latent UNet)을 로드·샘플링. 이 패키지는 `Bifusion_pip-version-Med` 폴더에 있고 버전은 `0.5.0+medfusion`.
   - **웹 어댑터** — `app/services/medfusion_service.py`의 `MedfusionService`는 웹 `settings`를 패키지의 `MedfusionConfig`로 매핑하고 워커 인터페이스를 유지하는 **얇은 래퍼**. 로딩 호환/DDIM 루프 같은 무거운 로직은 전혀 없다.
 - 두 워커(`augmentation_worker`, `inference_worker` 모드2)는 **동일한 인터페이스** `generate_samples(...) -> List[PIL.Image]`, `create_preview_grid(...)` 로만 호출하므로 워커 로직은 그대로다.
 
@@ -133,7 +133,7 @@ Medfusion 디코더 출력은 `settings.CHANNELS`(1|3)에 맞춰 흑백/RGB PIL�
 - `app/services/medfusion_service.py` — **얇은 어댑터**. `settings` → `bifusion.generate.medfusion.MedfusionConfig` 매핑 + 워커 인터페이스(`generate_samples`/`create_preview_grid`) 유지. 실제 생성 구현은 없음(패키지 위임).
 
 ### 별도 리포/폴더 (웹 리포 밖)
-- `Bifusion_pip-version-Med` — `bifusion` 패키지(버전 `0.4.0+medfusion`). 신규 모듈 `bifusion/generate/medfusion.py`에 Medfusion 로딩·DDIM·`MedfusionGenerator`가 있다. `bifusion.generate` / 최상위 `bifusion.generate_medfusion`로 노출, `augment(mode="medfusion")`도 지원. 웹앱은 `BIFUSION_PACKAGE_PATH`로 이 폴더를 import한다.
+- `Bifusion_pip-version-Med` — `bifusion` 패키지(버전 `0.5.0+medfusion`). 신규 모듈 `bifusion/generate/medfusion.py`에 Medfusion 로딩·DDIM·`MedfusionGenerator`가 있다. `bifusion.generate` / 최상위 `bifusion.generate_medfusion`로 노출, `augment(mode="medfusion")`도 지원. 웹앱은 `BIFUSION_PACKAGE_PATH`로 이 폴더를 import한다.
 
 ### 수정됨
 - `app/core/config.py` — DDPM 관련 변수 제거, `CHANNELS`·`MEDFUSION_*`·`BIFUSION_PACKAGE_PATH` 추가.
