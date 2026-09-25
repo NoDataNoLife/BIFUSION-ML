@@ -11,7 +11,11 @@ class Settings(BaseSettings):
     IMAGE_SIZE: int = 128
     CHANNELS: int = 1                 # 1=grayscale, 3=RGB (데이터셋/생성 출력 채널)
 
-    # Medfusion (유일한 생성 백엔드)
+    # 생성 로직이 담긴 bifusion 패키지(Bifusion_pip-version-Med) 경로.
+    # 웹앱은 이 경로를 sys.path에 추가해 `bifusion`을 import한다(pip 설치 대신).
+    BIFUSION_PACKAGE_PATH: str = r"C:\Users\tjdgk\Desktop\My\PBL\Bifusion_pip-version-Med"
+
+    # Medfusion (유일한 생성 백엔드) — 실제 생성은 bifusion.generate.medfusion 이 담당
     MEDFUSION_CODE_PATH: str = r"C:\Users\tjdgk\Desktop\My\PBL\medfusion_code"
     MEDFUSION_WEIGHTS_DIR: str = r"C:\Users\tjdgk\Desktop\My\PBL\medfusion_weights"
     MEDFUSION_DIFFUSION_CKPT: str = "runs/chest_diffusion/last.ckpt"

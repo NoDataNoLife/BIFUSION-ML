@@ -1,4 +1,4 @@
-> ⚠️ **최근 대규모 변경(2026-09)**: 생성 백엔드가 흑백 DDPM → **Medfusion**으로 전면 교체되었고, 실패 시 가짜 결과를 내던 폴백이 모두 **명시적 실패(fail-loud)**로 바뀌었습니다. 배포·프론트 담당은 반드시 [**MIGRATION.md**](./MIGRATION.md)를 먼저 읽으세요.
+> ⚠️ **최근 대규모 변경(2026-09)**: 생성 백엔드가 흑백 DDPM → **Medfusion**으로 전면 교체되었고, 생성 로직은 **`bifusion` 패키지(`Bifusion_pip-version-Med`)로 이관**되어 웹앱은 `BIFUSION_PACKAGE_PATH`로 이를 import합니다. 또한 실패 시 가짜 결과를 내던 폴백이 모두 **명시적 실패(fail-loud)**로 바뀌었습니다. 배포·프론트 담당은 반드시 [**MIGRATION.md**](./MIGRATION.md)를 먼저 읽으세요.
 
 # BIFUSION-ML
 
@@ -43,7 +43,7 @@ BIFUSION-ML/
 │   │   ├── training_worker.py        # -Q training      (ProtoNet 학습)
 │   │   └── inference_worker.py       # -Q inference     (진단 / 단독 생성)
 │   ├── services/
-│   │   ├── medfusion_service.py      # 생성 백엔드 (유일). latent diffusion 로드·샘플링
+│   │   ├── medfusion_service.py      # 생성 어댑터 (bifusion 패키지에 위임, settings 매핑)
 │   │   ├── protonet_service.py       # ProtoNet 학습(train_few_shot) / 진단(predict)
 │   │   ├── storage_service.py        # local | s3 산출물 저장
 │   │   └── image_utils.py            # base64 ↔ PIL 등
@@ -63,11 +63,12 @@ BIFUSION-ML/
 
 ## 생성 백엔드: Medfusion (배포 전 필독)
 
-이 서버의 **유일한** 생성기는 `medical_diffusion`(Medfusion) 기반 latent diffusion이다. 기존 흑백 DDPM은 제거되었고 **config 토글로 되돌릴 수 없다.** 실행하려면 아래 3가지가 모두 준비돼야 한다.
+이 서버의 **유일한** 생성기는 `medical_diffusion`(Medfusion) 기반 latent diffusion이다. 기존 흑백 DDPM은 제거되었고 **config 토글로 되돌릴 수 없다.** 생성 구현은 웹 리포가 아니라 **`bifusion` 패키지(`bifusion.generate.medfusion`)** 에 있으며, `app/services/medfusion_service.py`는 설정을 패키지로 넘기는 얇은 어댑터다. 실행하려면 아래 4가지가 모두 준비돼야 한다.
 
-1. **Python 패키지** — `requirements.txt`에 포함 (`pytorch-lightning, monai, einops, torchio, lpips` 등).
-2. **`medical_diffusion` 소스 코드** — pip 패키지가 아니라 디렉터리를 `sys.path`에 추가해 import. 위치는 env `MEDFUSION_CODE_PATH`.
-3. **가중치 체크포인트 2개** — env `MEDFUSION_WEIGHTS_DIR` 기준:
+1. **`bifusion` 패키지 소스** — `Bifusion_pip-version-Med` 폴더. pip 설치 대신 env `BIFUSION_PACKAGE_PATH`를 `sys.path`에 추가해 import한다(`pip install -e .[gpu,medfusion]`로 설치해도 됨). 없으면 워커가 `import bifusion`에서 실패한다.
+2. **Python 패키지** — `requirements.txt`에 포함 (`pytorch-lightning, monai, einops, torchio, lpips` 등).
+3. **`medical_diffusion` 소스 코드** — pip 패키지가 아니라 디렉터리를 `sys.path`에 추가해 import. 위치는 env `MEDFUSION_CODE_PATH`.
+4. **가중치 체크포인트 2개** — env `MEDFUSION_WEIGHTS_DIR` 기준:
    - diffusion: `MEDFUSION_DIFFUSION_CKPT` (기본 `runs/chest_diffusion/last.ckpt`)
    - VAE: `MEDFUSION_VAE_CKPT` (기본 `runs/2022_12_12_133315_chest_vaegan/last_vae.ckpt`)
 
@@ -132,6 +133,7 @@ http://localhost:8000/docs
 | `DEVICE` | `auto` | `auto\|cuda\|cpu\|mps` |
 | `IMAGE_SIZE` | `128` | 생성/전처리 해상도 |
 | `CHANNELS` | `1` | 1=흑백, 3=RGB (데이터셋·진단·생성 채널 일괄 결정) |
+| `BIFUSION_PACKAGE_PATH` | (로컬 경로) | 생성 로직이 담긴 `bifusion` 패키지 폴더 |
 | `MEDFUSION_CODE_PATH` | (로컬 경로) | `medical_diffusion` 소스 디렉터리 |
 | `MEDFUSION_WEIGHTS_DIR` | (로컬 경로) | 체크포인트 기준 디렉터리 |
 | `MEDFUSION_DIFFUSION_CKPT` / `MEDFUSION_VAE_CKPT` | (아래) | diffusion / VAE 가중치 상대경로 |

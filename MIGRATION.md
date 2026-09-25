@@ -2,15 +2,16 @@
 
 > 대상 독자: 이 웹 리포(BIFUSION-ML-main)를 이어받는 **개발자 및 AI 에이전트(Claude 등)**.
 > 목적: ML 담당 쪽에서 적용한 변경을 **오해 없이** 파악하고, 배포/프론트/에러처리를 안전하게 이어가도록 하는 것.
-> 작성일: 2026-09-22. 기준 브랜치: 이 문서와 같은 커밋의 `app/` 트리.
+> 작성일: 2026-09-22 (개정: 2026-09-25 — 생성 로직을 `bifusion` 패키지로 이관). 기준 브랜치: 이 문서와 같은 커밋의 `app/` 트리.
 
 ---
 
 ## 0. TL;DR (한 문단)
 
-**HTTP API 계약(엔드포인트·요청/응답 스키마·잡 흐름)은 바뀌지 않았다.** 바뀐 것은 두 가지다.
+**HTTP API 계약(엔드포인트·요청/응답 스키마·잡 흐름)은 바뀌지 않았다.** 바뀐 것은 세 가지다.
 1. **생성기 전면 교체**: 기존 흑백 DDPM(`diffusers.UNet2DModel`) → **Medfusion(`medical_diffusion` latent diffusion)**. config 토글로 되돌릴 수 없음. 새 런타임 의존성(코드+가중치+pip 패키지)이 배포에 반드시 필요.
-2. **"실패 시 가짜 산출물" 폴백 전면 제거(fail-loud)**: 세 워커가 실패해도 가짜로 "성공"하던 동작이 사라지고, 이제 **예외를 던져 Celery 잡이 `FAILURE`로 끝난다.** 이 실패는 이미 `GET /{job_id}` 응답의 `error` 필드로 노출된다. **프론트가 `FAILURE`/`error`를 사용자에게 보여줘야 한다.**
+2. **생성 로직이 `bifusion` 패키지로 이관됨**: 생성 구현은 이제 웹 리포가 아니라 **`bifusion` 패키지(`bifusion.generate.medfusion`)** 에 있다. 웹앱의 `app/services/medfusion_service.py`는 설정을 패키지로 넘기는 **얇은 어댑터**일 뿐이다. 웹앱은 env `BIFUSION_PACKAGE_PATH`를 `sys.path`에 추가해 패키지를 import한다(pip 설치 대신). → 이 패키지 폴더가 배포에 반드시 존재해야 함.
+3. **"실패 시 가짜 산출물" 폴백 전면 제거(fail-loud)**: 세 워커가 실패해도 가짜로 "성공"하던 동작이 사라지고, 이제 **예외를 던져 Celery 잡이 `FAILURE`로 끝난다.** 이 실패는 이미 `GET /{job_id}` 응답의 `error` 필드로 노출된다. **프론트가 `FAILURE`/`error`를 사용자에게 보여줘야 한다.**
 
 배포 담당은 §3·§4를, 프론트 담당은 §2·§7을, 코드 읽는 에이전트는 전체를 보라.
 
@@ -74,24 +75,25 @@ return JobResponse(job_id=..., status="FAILURE", progress=..., result=None, erro
 
 ---
 
-## 3. 생성기 교체: DDPM → Medfusion
+## 3. 생성기 교체: DDPM → Medfusion (구현은 `bifusion` 패키지)
 
-### 3.1 개념
+### 3.1 개념 / 계층
 - 이전: `app/services/diffusion_service.py`가 흑백 1채널 3-레벨 `UNet2DModel(64,128,256)` DDPM을 자체 정의·샘플링.
-- 지금: `app/services/medfusion_service.py`의 **`MedfusionService`** 가 사전학습된 의료 **latent diffusion**(VAE + latent UNet)을 로드·샘플링한다.
+- 지금(2계층):
+  - **`bifusion` 패키지** — `bifusion.generate.medfusion` 에 실제 구현(`MedfusionConfig`, `MedfusionGenerator`, `generate_medfusion_samples`, `create_preview_grid`)이 있다. 사전학습 의료 **latent diffusion**(VAE + latent UNet)을 로드·샘플링. 이 패키지는 `Bifusion_pip-version-Med` 폴더에 있고 버전은 `0.4.0+medfusion`.
+  - **웹 어댑터** — `app/services/medfusion_service.py`의 `MedfusionService`는 웹 `settings`를 패키지의 `MedfusionConfig`로 매핑하고 워커 인터페이스를 유지하는 **얇은 래퍼**. 로딩 호환/DDIM 루프 같은 무거운 로직은 전혀 없다.
 - 두 워커(`augmentation_worker`, `inference_worker` 모드2)는 **동일한 인터페이스** `generate_samples(...) -> List[PIL.Image]`, `create_preview_grid(...)` 로만 호출하므로 워커 로직은 그대로다.
 
-### 3.2 런타임 의존성 (3가지 모두 필요)
-1. **Python 패키지**(`requirements.txt`에 추가됨):
-   `pytorch-lightning>=2.0, monai>=1.2, einops>=0.6, pytorch_msssim>=1.0, torchmetrics>=1.0, torchio>=0.18, lpips>=0.1.4`
-2. **`medical_diffusion` 소스 코드**: pip 패키지가 아니라 **디렉터리를 `sys.path`에 추가**해서 import한다. 위치는 env `MEDFUSION_CODE_PATH`.
-   `medfusion_service.py`가 `from medical_diffusion.models.pipelines import DiffusionPipeline`를 한다.
-3. **가중치 체크포인트 2개**(env `MEDFUSION_WEIGHTS_DIR` 기준 상대경로):
+### 3.2 런타임 의존성 (4가지 모두 필요)
+1. **`bifusion` 패키지 소스**: `Bifusion_pip-version-Med` 폴더. pip 설치 대신 env `BIFUSION_PACKAGE_PATH`를 `sys.path`에 추가해 import한다(`medfusion_service.py`의 `_ensure_bifusion_on_path`). 배포 이미지에 이 폴더가 포함돼야 함. (`pip install -e .[gpu,medfusion]`로 설치해도 됨.)
+2. **Python 패키지**(웹 `requirements.txt`에 포함): `pytorch-lightning>=2.0, monai>=1.2, einops>=0.6, pytorch_msssim>=1.0, torchmetrics>=1.0, torchio>=0.18, lpips>=0.1.4`
+3. **`medical_diffusion` 소스 코드**: pip 패키지가 아니라 **디렉터리를 `sys.path`에 추가**해서 import한다. 위치는 env `MEDFUSION_CODE_PATH`. 패키지의 `bifusion.generate.medfusion._load_pipeline`가 `from medical_diffusion.models.pipelines import DiffusionPipeline`를 한다.
+4. **가중치 체크포인트 2개**(env `MEDFUSION_WEIGHTS_DIR` 기준 상대경로):
    - diffusion: `MEDFUSION_DIFFUSION_CKPT`(기본 `runs/chest_diffusion/last.ckpt`)
    - VAE: `MEDFUSION_VAE_CKPT`(기본 `runs/2022_12_12_133315_chest_vaegan/last_vae.ckpt`)
 
-### 3.3 로딩 호환 처리(이미 코드에 내장 — 참고용)
-`medfusion_service.py`는 다음을 자동 처리한다(수정 불필요, 원리 이해용):
+### 3.3 로딩 호환 처리(패키지 `bifusion.generate.medfusion`에 내장 — 참고용)
+패키지의 `bifusion.generate.medfusion`이 다음을 자동 처리한다(수정 불필요, 원리 이해용):
 - `streamlit` 모듈 **스텁 주입**(Medfusion 내부가 `st.progress`를 import하므로). 실제 streamlit 설치 불필요.
 - **PyTorch-Lightning 1.x→2.x 심**(`pytorch_lightning.utilities.cloud_io.load` 부재 보완).
 - 신뢰 로컬 ckpt이므로 `torch.load(weights_only=False)` 강제(PyTorch 2.6+ 기본값 우회).
@@ -107,6 +109,7 @@ Medfusion 디코더 출력은 `settings.CHANNELS`(1|3)에 맞춰 흑백/RGB PIL�
 
 현재 `Dockerfile`/`docker-compose.yml`은 인수 시점 기준이라 **Medfusion을 위한 준비가 없다.** 아래를 반드시 반영:
 
+- [ ] **`bifusion` 패키지(`Bifusion_pip-version-Med`) 이미지에 포함**: `BIFUSION_PACKAGE_PATH`를 컨테이너 내부 경로로 지정하고 그 폴더를 `COPY`/마운트하거나, 이미지 빌드 시 `pip install -e /path/Bifusion_pip-version-Med[medfusion]`로 설치. 이게 없으면 워커가 `import bifusion`에서 즉시 실패한다.
 - [ ] **`medical_diffusion` 코드 이미지에 포함**: `MEDFUSION_CODE_PATH`가 컨테이너 내부 경로를 가리키게 하고, 그 경로에 코드를 `COPY` 하거나 볼륨 마운트. (pip 설치 아님)
 - [ ] **가중치 마운트**: `MEDFUSION_WEIGHTS_DIR`를 컨테이너 경로로 지정하고 ckpt 2개를 마운트/복사. `docker-compose.yml`의 `volumes:`에 현재는 `./models:/app/models`만 있음 → **가중치·코드 볼륨 추가 필요.**
 - [ ] **env 경로 교체**: `app/core/config.py`의 `MEDFUSION_CODE_PATH`/`MEDFUSION_WEIGHTS_DIR` 기본값은 **개발자 로컬 Windows 절대경로**(`C:\Users\tjdgk\...`)다. 배포 `.env`에서 리눅스 경로로 덮어써야 함.
@@ -115,7 +118,7 @@ Medfusion 디코더 출력은 `settings.CHANNELS`(1|3)에 맞춰 흑백/RGB PIL�
 - [ ] **(정리, 선택)** `requirements.txt`의 `diffusers>=0.27.0`, `torch-ema>=0.3`는 이제 **미사용**. 제거해도 됨(남겨도 무해).
 - [ ] **(정리, 선택)** `.env` 파일에 삭제된 변수(`DEFAULT_TIMESTEPS` 등)가 남아 있으면 제거. `config.py`가 `extra="ignore"`라 에러는 안 나지만 혼란 방지.
 
-첫 기동 시 가중치를 못 찾으면 `MedfusionService._load_pipeline()`이 `FileNotFoundError: Medfusion diffusion checkpoint not found: ...`로 즉시 실패한다(조용히 넘어가지 않음).
+첫 기동 시 가중치를 못 찾으면 `bifusion.generate.medfusion._load_pipeline()`이 `FileNotFoundError: Medfusion diffusion checkpoint not found: ...`로 즉시 실패한다(조용히 넘어가지 않음).
 
 ---
 
@@ -127,10 +130,13 @@ Medfusion 디코더 출력은 `settings.CHANNELS`(1|3)에 맞춰 흑백/RGB PIL�
 - `scripts/create_dummy_checkpoint.py`
 
 ### 신규
-- `app/services/medfusion_service.py` — `MedfusionService`, 로딩 호환 심, DDIM 자체 구현, `create_preview_grid`.
+- `app/services/medfusion_service.py` — **얇은 어댑터**. `settings` → `bifusion.generate.medfusion.MedfusionConfig` 매핑 + 워커 인터페이스(`generate_samples`/`create_preview_grid`) 유지. 실제 생성 구현은 없음(패키지 위임).
+
+### 별도 리포/폴더 (웹 리포 밖)
+- `Bifusion_pip-version-Med` — `bifusion` 패키지(버전 `0.4.0+medfusion`). 신규 모듈 `bifusion/generate/medfusion.py`에 Medfusion 로딩·DDIM·`MedfusionGenerator`가 있다. `bifusion.generate` / 최상위 `bifusion.generate_medfusion`로 노출, `augment(mode="medfusion")`도 지원. 웹앱은 `BIFUSION_PACKAGE_PATH`로 이 폴더를 import한다.
 
 ### 수정됨
-- `app/core/config.py` — DDPM 관련 변수 제거, `CHANNELS`·`MEDFUSION_*` 추가.
+- `app/core/config.py` — DDPM 관련 변수 제거, `CHANNELS`·`MEDFUSION_*`·`BIFUSION_PACKAGE_PATH` 추가.
 - `app/core/model_loader.py` — `load_ddpm_pipeline`/`_DDPM_MODEL_CACHE`/`diffusers`·`torch_ema` import 제거. `get_device()` + `ModelLoader/LocalModelLoader/S3ModelLoader/get_model_loader`만 유지.
 - `app/workers/augmentation_worker.py` — 생성기를 `MedfusionService`로 교체, 채널(`CHANNELS`) 처리, 랜덤 npz 폴백 제거.
 - `app/workers/training_worker.py` — 데이터셋 미발견 시 `raise FileNotFoundError`(랜덤 학습 제거).
@@ -155,6 +161,7 @@ Medfusion 디코더 출력은 `settings.CHANNELS`(1|3)에 맞춰 흑백/RGB PIL�
 | `DEVICE` | `auto` | `auto|cuda|cpu|mps` |
 | `IMAGE_SIZE` | `128` | 생성/전처리 해상도 |
 | `CHANNELS` | `1` | **1=흑백, 3=RGB.** 데이터셋 npz·진단 전처리·생성 출력 채널을 일괄 결정 |
+| `BIFUSION_PACKAGE_PATH` | (로컬 절대경로) | 생성 로직이 담긴 `bifusion` 패키지(`Bifusion_pip-version-Med`) 폴더(→`sys.path`) |
 | `MEDFUSION_CODE_PATH` | (로컬 절대경로) | `medical_diffusion` 소스 디렉터리(→`sys.path`) |
 | `MEDFUSION_WEIGHTS_DIR` | (로컬 절대경로) | 아래 ckpt 상대경로의 기준 디렉터리 |
 | `MEDFUSION_DIFFUSION_CKPT` | `runs/chest_diffusion/last.ckpt` | diffusion 체크포인트 |
@@ -227,13 +234,17 @@ Medfusion 디코더 출력은 `settings.CHANNELS`(1|3)에 맞춰 흑백/RGB PIL�
 
 ## 10. 배포 후 스모크 체크 (권장 순서)
 
-1. **import 무결성**(deleted 모듈 참조 없음 확인):
+1. **패키지 import 무결성**(BIFUSION_PACKAGE_PATH 검증):
+   ```bash
+   python -c "import sys; sys.path.insert(0, '<BIFUSION_PACKAGE_PATH>'); import bifusion; print(bifusion.__version__); from bifusion.generate.medfusion import MedfusionGenerator; print('bifusion medfusion OK')"
+   ```
+2. **워커 import 무결성**(deleted 모듈 참조 없음 확인):
    ```bash
    python -c "import app.workers.inference_worker, app.workers.training_worker, app.workers.augmentation_worker; print('workers import OK')"
    ```
-2. **Medfusion 로드**(가중치/코드 경로 검증): 워커 프로세스에서 `MedfusionService(image_size=128)` 1회 생성 → 로그에 `Medfusion pipeline ready on ...` 뜨는지.
-3. **fail-loud 확인**: 존재하지 않는 `dataset_id`로 학습 잡 실행 → `GET /{job_id}`가 `status="FAILURE"`, `error`에 `Dataset not found ...` 나오는지.
-4. **정상 경로**: 증강 → (성공한 `dataset_id`로) 학습 → (성공한 `model_id`로) 진단까지 이어지는지.
+3. **Medfusion 로드**(가중치/코드 경로 검증): 워커 프로세스에서 `MedfusionService(image_size=128)` 1회 생성 → 로그에 `[Medfusion] Pipeline ready on ...` 뜨는지.
+4. **fail-loud 확인**: 존재하지 않는 `dataset_id`로 학습 잡 실행 → `GET /{job_id}`가 `status="FAILURE"`, `error`에 `Dataset not found ...` 나오는지.
+5. **정상 경로**: 증강 → (성공한 `dataset_id`로) 학습 → (성공한 `model_id`로) 진단까지 이어지는지.
 
 ---
 
@@ -243,6 +254,9 @@ Medfusion 디코더 출력은 `settings.CHANNELS`(1|3)에 맞춰 흑백/RGB PIL�
 DEVICE=auto
 IMAGE_SIZE=128
 CHANNELS=1                 # 1=grayscale, 3=RGB
+
+# 생성 로직이 담긴 bifusion 패키지 경로 (웹앱이 sys.path에 추가해 import)
+BIFUSION_PACKAGE_PATH=/opt/Bifusion_pip-version-Med
 
 # Medfusion (유일한 생성 백엔드) — 배포 시 컨테이너 내부 경로로 반드시 교체
 MEDFUSION_CODE_PATH=/opt/medical_diffusion
