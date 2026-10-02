@@ -2,16 +2,17 @@
 
 > 대상 독자: 이 웹 리포(BIFUSION-ML-main)를 이어받는 **개발자 및 AI 에이전트(Claude 등)**.
 > 목적: ML 담당 쪽에서 적용한 변경을 **오해 없이** 파악하고, 배포/프론트/에러처리를 안전하게 이어가도록 하는 것.
-> 작성일: 2026-09-22 (개정: 2026-09-25 — 생성 로직을 `bifusion` 패키지로 이관). 기준 브랜치: 이 문서와 같은 커밋의 `app/` 트리.
+> 작성일: 2026-09-22 (개정: 2026-09-25 생성 로직 `bifusion` 패키지 이관 · 2026-10-02 **eye(fundus) VAE 단일 범용 + 업로드별 파인튜닝 증강**). 기준 브랜치: 이 문서와 같은 커밋의 `app/` 트리.
 
 ---
 
 ## 0. TL;DR (한 문단)
 
-**HTTP API 계약(엔드포인트·요청/응답 스키마·잡 흐름)은 바뀌지 않았다.** 바뀐 것은 세 가지다.
-1. **생성기 전면 교체**: 기존 흑백 DDPM(`diffusers.UNet2DModel`) → **Medfusion(`medical_diffusion` latent diffusion)**. config 토글로 되돌릴 수 없음. 새 런타임 의존성(코드+가중치+pip 패키지)이 배포에 반드시 필요.
+**HTTP API 계약(엔드포인트·요청/응답 스키마·잡 흐름)은 바뀌지 않았다.** 바뀐 것은 네 가지다.
+1. **생성기 전면 교체**: 기존 흑백 DDPM(`diffusers.UNet2DModel`) → **Medfusion(`medical_diffusion` latent diffusion)**, **eye(fundus) VAE 단일 범용**(RGB·회색조 모두 처리). config 토글로 되돌릴 수 없음. 새 런타임 의존성(코드+가중치+pip 패키지)이 배포에 반드시 필요.
 2. **생성 로직이 `bifusion` 패키지로 이관됨**: 생성 구현은 이제 웹 리포가 아니라 **`bifusion` 패키지(`bifusion.generate.medfusion`)** 에 있다. 웹앱의 `app/services/medfusion_service.py`는 설정을 패키지로 넘기는 **얇은 어댑터**일 뿐이다. 웹앱은 env `BIFUSION_PACKAGE_PATH`를 `sys.path`에 추가해 패키지를 import한다(pip 설치 대신). → 이 패키지 폴더가 배포에 반드시 존재해야 함.
-3. **"실패 시 가짜 산출물" 폴백 전면 제거(fail-loud)**: 세 워커가 실패해도 가짜로 "성공"하던 동작이 사라지고, 이제 **예외를 던져 Celery 잡이 `FAILURE`로 끝난다.** 이 실패는 이미 `GET /{job_id}` 응답의 `error` 필드로 노출된다. **프론트가 `FAILURE`/`error`를 사용자에게 보여줘야 한다.**
+3. **증강이 "업로드별 파인튜닝" 방식(fidelity-first)으로 바뀜**: 증강은 더 이상 무조건부 생성이 아니라, **업로드 이미지로 UNet을 짧게 파인튜닝(VAE 동결)한 뒤 img2img로 변주본 생성**한다 → 원본에 충실 + 미약한 다양성. 증강 잡마다 **클래스별 파인튜닝(수십 초/GPU)** 이 포함된다.
+4. **"실패 시 가짜 산출물" 폴백 전면 제거(fail-loud)**: 세 워커가 실패해도 가짜로 "성공"하던 동작이 사라지고, 이제 **예외를 던져 Celery 잡이 `FAILURE`로 끝난다.** 이 실패는 이미 `GET /{job_id}` 응답의 `error` 필드로 노출된다. **프론트가 `FAILURE`/`error`를 사용자에게 보여줘야 한다.**
 
 배포 담당은 §3·§4를, 프론트 담당은 §2·§7을, 코드 읽는 에이전트는 전체를 보라.
 
@@ -21,16 +22,17 @@
 
 | 영역 | 이전(인수 시점) | 지금 | 조치 필요 대상 |
 |---|---|---|---|
-| 생성 백엔드 | 흑백 1채널 DDPM(`diffusers`) 자체 구현 | Medfusion(`medical_diffusion`) latent diffusion | 배포 |
+| 생성 백엔드 | 흑백 1채널 DDPM(`diffusers`) 자체 구현 | Medfusion latent diffusion, **eye(fundus) VAE 단일 범용** | 배포 |
 | 생성 토글 | (사실상 없음) | 없음 — Medfusion 고정, 되돌리기 불가 | 배포/기획 |
+| 증강 방식 | 무(無) | **업로드별 UNet 파인튜닝 + img2img**(fidelity-first). 잡마다 클래스별 파인튜닝 포함 | 배포(GPU 시간)/기획 |
 | 학습 실패 시 | 랜덤 노이즈로 학습해 "성공" 위장 | `FileNotFoundError` → 잡 `FAILURE` | 프론트 |
 | 진단(추론) 모델 없음 | **랜덤 가중치 모델** 만들어 진단 | `FileNotFoundError` → 잡 `FAILURE` | 프론트 |
 | 진단(추론) 입력 없음 | **노이즈 이미지**를 진단 | `ValueError` → 잡 `FAILURE` | 프론트 |
-| 증강 실패 시 | 랜덤 npz 조작 | Medfusion 정상 생성(조작 폴백 제거) | 프론트 |
+| 증강: 빈 클래스 | 랜덤 npz/노이즈로 채움 | `ValueError` → 잡 `FAILURE`(원본 없으면 증강 불가) | 프론트 |
 | API 스키마/엔드포인트 | — | **동일(불변)** | 없음 |
-| 채널 | 흑백 고정 | `CHANNELS`(1|3) 설정화. 기본 1(흑백) | 기획(컬러 원하면 3) |
+| 채널 | 흑백 고정 | `CHANNELS`(1|3) 설정화. **기본 3(RGB, eye VAE 색 보존)** | 기획 |
 | pip 의존성 | `torch, diffusers, torch-ema...` | Medfusion 스택 추가(`pytorch-lightning, monai, einops, torchio, lpips...`) | 배포 |
-| env 변수 | `DEFAULT_TIMESTEPS, DEFAULT_MODEL_NAME, ALLOW_UNTRAINED_MODEL, GENERATOR_BACKEND` | 삭제됨. 대신 `MEDFUSION_*`, `CHANNELS` 추가 | 배포 |
+| env 변수 | `DEFAULT_TIMESTEPS, DEFAULT_MODEL_NAME, ALLOW_UNTRAINED_MODEL, GENERATOR_BACKEND` | 삭제됨. 대신 `MEDFUSION_*`, `MEDFUSION_FINETUNE_*`, `MEDFUSION_STRENGTH`, `CHANNELS`, `BIFUSION_PACKAGE_PATH` 추가 | 배포 |
 
 ---
 
@@ -49,8 +51,9 @@
 | `app/workers/inference_worker.py` (모드1 진단) | `model_id`로 학습된 `best.pt`를 못 찾음 | `FileNotFoundError`(탐색 경로 명시) |
 | `app/workers/inference_worker.py` (모드1 진단) | 유효하게 디코딩된 입력 이미지가 0장 | `ValueError`(받은 개수 명시) |
 | `app/services/protonet_service.py` `train_few_shot` | 특정 클래스 표본이 0개 | `ValueError(f"class {c} has no samples")` |
+| `app/workers/augmentation_worker.py` | Normal/Anomaly 중 유효 업로드가 0장 | `ValueError`(받은 개수 명시) — 원본 없이 fidelity 증강 불가 |
 
-> 증강 워커(`augmentation_worker.py`)는 원본이 비면 여전히 `create_synthetic_noise_image`로 채워 진행한다(빈 클래스 방어용, 모델/데이터 조작이 아님). 이것까지 fail-loud로 통일할지는 미결(§9).
+> 증강 워커도 이제 fail-loud로 통일됐다: 원본이 없으면 과거처럼 노이즈로 채우지 않고 **명시적으로 실패**한다(업로드 기반 파인튜닝 증강이라 원본이 필수).
 
 ### 2.3 이 실패가 API로 어떻게 나오나 (프론트 필독)
 `GET /api/.../{job_id}` (라우터: `app/routers/{inference,training,augmentation}.py`)는 Celery 상태를 그대로 매핑한다:
@@ -80,17 +83,19 @@ return JobResponse(job_id=..., status="FAILURE", progress=..., result=None, erro
 ### 3.1 개념 / 계층
 - 이전: `app/services/diffusion_service.py`가 흑백 1채널 3-레벨 `UNet2DModel(64,128,256)` DDPM을 자체 정의·샘플링.
 - 지금(2계층):
-  - **`bifusion` 패키지** — `bifusion.generate.medfusion` 에 실제 구현(`MedfusionConfig`, `MedfusionGenerator`, `generate_medfusion_samples`, `create_preview_grid`)이 있다. 사전학습 의료 **latent diffusion**(VAE + latent UNet)을 로드·샘플링. 이 패키지는 `Bifusion_pip-version-Med` 폴더에 있고 버전은 `0.5.0+medfusion`.
-  - **웹 어댑터** — `app/services/medfusion_service.py`의 `MedfusionService`는 웹 `settings`를 패키지의 `MedfusionConfig`로 매핑하고 워커 인터페이스를 유지하는 **얇은 래퍼**. 로딩 호환/DDIM 루프 같은 무거운 로직은 전혀 없다.
-- 두 워커(`augmentation_worker`, `inference_worker` 모드2)는 **동일한 인터페이스** `generate_samples(...) -> List[PIL.Image]`, `create_preview_grid(...)` 로만 호출하므로 워커 로직은 그대로다.
+  - **`bifusion` 패키지** — `bifusion.generate.medfusion` 에 실제 구현이 있다: `MedfusionConfig`, `MedfusionGenerator`(`generate`=무조건부 / `generate_from_images`=img2img / `finetune_on_images`·`augment_with_finetune`=업로드별 파인튜닝), 함수형 `generate_medfusion_samples`/`augment_medfusion_from_images`/`augment_medfusion_finetune`, `create_preview_grid`. **eye(fundus) VAE 단일 범용**(RGB·회색조 모두 충실 복원)을 동결 latent embedder로 사용. 이 패키지는 `Bifusion_pip-version-Med` 폴더에 있고 버전은 `0.5.0+medfusion`.
+  - **웹 어댑터** — `app/services/medfusion_service.py`의 `MedfusionService`는 웹 `settings`를 패키지의 `MedfusionConfig`로 매핑하고 워커 인터페이스를 유지하는 **얇은 래퍼**. 로딩 호환/DDIM 루프/파인튜닝 같은 무거운 로직은 전혀 없다(패키지 위임).
+- 워커 호출: **증강 워커**는 `MedfusionService.augment_with_finetune(images, num_outputs, ...)`(업로드별 파인튜닝 + img2img)를, **진단 워커 모드2(단독 생성)**는 `generate_samples(...)`(무조건부)를 사용한다. 둘 다 `create_preview_grid(...)`로 미리보기 생성.
 
 ### 3.2 런타임 의존성 (4가지 모두 필요)
 1. **`bifusion` 패키지 소스**: `Bifusion_pip-version-Med` 폴더. pip 설치 대신 env `BIFUSION_PACKAGE_PATH`를 `sys.path`에 추가해 import한다(`medfusion_service.py`의 `_ensure_bifusion_on_path`). 배포 이미지에 이 폴더가 포함돼야 함. (`pip install -e .[gpu,medfusion]`로 설치해도 됨.)
 2. **Python 패키지**(웹 `requirements.txt`에 포함): `pytorch-lightning>=2.0, monai>=1.2, einops>=0.6, pytorch_msssim>=1.0, torchmetrics>=1.0, torchio>=0.18, lpips>=0.1.4`
 3. **`medical_diffusion` 소스 코드**: pip 패키지가 아니라 **디렉터리를 `sys.path`에 추가**해서 import한다. 위치는 env `MEDFUSION_CODE_PATH`. 패키지의 `bifusion.generate.medfusion._load_pipeline`가 `from medical_diffusion.models.pipelines import DiffusionPipeline`를 한다.
-4. **가중치 체크포인트 2개**(env `MEDFUSION_WEIGHTS_DIR` 기준 상대경로):
-   - diffusion: `MEDFUSION_DIFFUSION_CKPT`(기본 `runs/chest_diffusion/last.ckpt`)
-   - VAE: `MEDFUSION_VAE_CKPT`(기본 `runs/2022_12_12_133315_chest_vaegan/last_vae.ckpt`)
+4. **가중치 체크포인트 2개 — eye(fundus)**(env `MEDFUSION_WEIGHTS_DIR` 기준 상대경로):
+   - diffusion: `MEDFUSION_DIFFUSION_CKPT`(기본 `runs/eye_diffusion/last.ckpt`)
+   - VAE: `MEDFUSION_VAE_CKPT`(기본 `runs/2022_12_12_224914_eye_vaegan/last_vae.ckpt`), latent `MEDFUSION_LATENT_SHAPE=4,32,32`
+
+   > **왜 eye VAE 단일 범용인가(실측 근거):** chest VAE로 혈액(RGB) 복원 시 **색이 전부 소실**(회색조화, PSNR~20)됐고 patho VAE는 색 왜곡. **eye VAE만 blood(27.7dB)·X선(38dB) 모두 색·구조 충실 복원** → 모달리티 라우팅 없이 하나로 처리. 단 eye_diffusion의 UNet prior는 fundus 도메인이라, 그대로 생성하면 타 모달리티가 흐려진다 → **업로드별 UNet 파인튜닝으로 해결**(아래 §3.5).
 
 ### 3.3 로딩 호환 처리(패키지 `bifusion.generate.medfusion`에 내장 — 참고용)
 패키지의 `bifusion.generate.medfusion`이 다음을 자동 처리한다(수정 불필요, 원리 이해용):
@@ -101,7 +106,17 @@ return JobResponse(job_id=..., status="FAILURE", progress=..., result=None, erro
 - 파이프라인은 **워커 프로세스당 싱글톤 캐시**(`_PIPE_CACHE`)로 상주 → 첫 호출만 느림(수십 초).
 
 ### 3.4 출력 채널
-Medfusion 디코더 출력은 `settings.CHANNELS`(1|3)에 맞춰 흑백/RGB PIL로 변환되고 `settings.IMAGE_SIZE`(기본 128)로 리사이즈된다. `_tensor_to_pil` 참고.
+Medfusion 디코더 출력은 `settings.CHANNELS`(1|3)에 맞춰 흑백/RGB PIL로 변환되고 `settings.IMAGE_SIZE`(기본 128)로 리사이즈된다(`_tensor_to_pil`). eye VAE가 색을 보존하므로 **기본 `CHANNELS=3`(RGB)**.
+
+### 3.5 증강 흐름: 업로드별 파인튜닝 + img2img (fidelity-first)
+증강 워커는 클래스별로 다음을 수행한다(`MedfusionService.augment_with_finetune` → 패키지 `MedfusionGenerator.augment_with_finetune`):
+1. 업로드 이미지를 eye VAE로 latent 인코딩(VAE 동결).
+2. 그 latent로 **UNet(`noise_estimator`)만 짧게 파인튜닝**(`MEDFUSION_FINETUNE_STEPS`, `MEDFUSION_FINETUNE_LR`) → 업로드 도메인에 prior 적응.
+3. **img2img/SDEdit**: 원본을 `MEDFUSION_STRENGTH`만큼만 노이즈 주고 디노이즈 → 원본에 충실한 변주본 생성(낮을수록 원본 밀착).
+4. 파인튜닝 가중치는 생성 직후 **원복(restore)** → 싱글톤 파이프라인이 클래스/잡 간 오염되지 않음.
+
+- 비용: 클래스마다 파인튜닝이 붙어 **증강 잡이 "파인튜닝+생성"** 프로파일(4090 기준 클래스당 수십 초). GPU 1장 2잡 금지 규칙 준수 필요(§4 동시성).
+- 실측(4090): 16장·400스텝·lr1e-4 파인튜닝 **~24초**에 혈액 img2img가 stock의 blur에서 **선명·원본 충실**로 전환됨(검증 완료).
 
 ---
 
@@ -114,7 +129,8 @@ Medfusion 디코더 출력은 `settings.CHANNELS`(1|3)에 맞춰 흑백/RGB PIL�
 - [ ] **가중치 마운트**: `MEDFUSION_WEIGHTS_DIR`를 컨테이너 경로로 지정하고 ckpt 2개를 마운트/복사. `docker-compose.yml`의 `volumes:`에 현재는 `./models:/app/models`만 있음 → **가중치·코드 볼륨 추가 필요.**
 - [ ] **env 경로 교체**: `app/core/config.py`의 `MEDFUSION_CODE_PATH`/`MEDFUSION_WEIGHTS_DIR` 기본값은 **개발자 로컬 Windows 절대경로**(`C:\Users\tjdgk\...`)다. 배포 `.env`에서 리눅스 경로로 덮어써야 함.
 - [ ] **torch(및 스택) 설치 환경 확인**: `Dockerfile`은 `python:3.11-slim`(CPU). Medfusion은 CPU로도 돌지만 매우 느리다. GPU 배포면 CUDA 베이스 이미지/런타임 필요.
-- [ ] **동시성 유지**: compose의 각 worker `--concurrency=1` 유지 권장. 특히 GPU 1장에 생성 잡 2개가 동시에 뜨면 불안정(cuDNN 실패) 가능. 큐 분리(`augmentation`/`training`/`inference`)는 그대로 두면 안전.
+- [ ] **동시성 유지**: compose의 각 worker `--concurrency=1`(현재 그대로 OK). 특히 GPU 1장에 잡 2개가 동시에 뜨면 불안정(cuDNN 실패). **증강 잡은 이제 UNet 파인튜닝을 포함**해 GPU·시간을 더 쓰므로(클래스당 수십 초) 동시성 1 준수가 더 중요하다. 큐 분리(`augmentation`/`training`/`inference`)는 유지.
+- [ ] **GPU 권장**: 증강이 파인튜닝을 포함하므로 CPU 배포는 매우 느리다. 사실상 **CUDA 런타임 필요**.
 - [ ] **(정리, 선택)** `requirements.txt`의 `diffusers>=0.27.0`, `torch-ema>=0.3`는 이제 **미사용**. 제거해도 됨(남겨도 무해).
 - [ ] **(정리, 선택)** `.env` 파일에 삭제된 변수(`DEFAULT_TIMESTEPS` 등)가 남아 있으면 제거. `config.py`가 `extra="ignore"`라 에러는 안 나지만 혼란 방지.
 
@@ -130,15 +146,15 @@ Medfusion 디코더 출력은 `settings.CHANNELS`(1|3)에 맞춰 흑백/RGB PIL�
 - `scripts/create_dummy_checkpoint.py`
 
 ### 신규
-- `app/services/medfusion_service.py` — **얇은 어댑터**. `settings` → `bifusion.generate.medfusion.MedfusionConfig` 매핑 + 워커 인터페이스(`generate_samples`/`create_preview_grid`) 유지. 실제 생성 구현은 없음(패키지 위임).
+- `app/services/medfusion_service.py` — **얇은 어댑터**. `settings` → `bifusion.generate.medfusion.MedfusionConfig` 매핑 + 워커 인터페이스 유지: `generate_samples`(무조건부), **`augment_with_finetune(images, num_outputs, ...)`**(업로드별 파인튜닝+img2img), `create_preview_grid`. 실제 로직은 없음(패키지 위임).
 
 ### 별도 리포/폴더 (웹 리포 밖)
-- `Bifusion_pip-version-Med` — `bifusion` 패키지(버전 `0.5.0+medfusion`). 신규 모듈 `bifusion/generate/medfusion.py`에 Medfusion 로딩·DDIM·`MedfusionGenerator`가 있다. `bifusion.generate` / 최상위 `bifusion.generate_medfusion`로 노출, `augment(mode="medfusion")`도 지원. 웹앱은 `BIFUSION_PACKAGE_PATH`로 이 폴더를 import한다.
+- `Bifusion_pip-version-Med` — `bifusion` 패키지(버전 `0.5.0+medfusion`). `bifusion/generate/medfusion.py`에 Medfusion 로딩·DDIM·img2img·**업로드별 파인튜닝**(`finetune_on_images`/`augment_with_finetune`)이 있다. **eye VAE 단일 범용** 기본값. `bifusion.generate` / 최상위 API로 노출, `augment(mode="medfusion")`도 지원. 웹앱은 `BIFUSION_PACKAGE_PATH`로 이 폴더를 import한다.
 
 ### 수정됨
-- `app/core/config.py` — DDPM 관련 변수 제거, `CHANNELS`·`MEDFUSION_*`·`BIFUSION_PACKAGE_PATH` 추가.
+- `app/core/config.py` — DDPM 변수 제거, `BIFUSION_PACKAGE_PATH`·`MEDFUSION_*`(eye ckpt·`LATENT_SHAPE=4,32,32`)·**`MEDFUSION_FINETUNE_STEPS/LR`·`MEDFUSION_STRENGTH`** 추가, **`CHANNELS` 기본 3**.
 - `app/core/model_loader.py` — `load_ddpm_pipeline`/`_DDPM_MODEL_CACHE`/`diffusers`·`torch_ema` import 제거. `get_device()` + `ModelLoader/LocalModelLoader/S3ModelLoader/get_model_loader`만 유지.
-- `app/workers/augmentation_worker.py` — 생성기를 `MedfusionService`로 교체, 채널(`CHANNELS`) 처리, 랜덤 npz 폴백 제거.
+- `app/workers/augmentation_worker.py` — **클래스별 업로드 파인튜닝 + img2img 증강**(`augment_with_finetune`)으로 전환. 빈 클래스는 노이즈로 채우지 않고 `ValueError`(fail-loud). 진행률 10→50(Normal)/50→90(Anomaly). 채널(`CHANNELS`) 처리.
 - `app/workers/training_worker.py` — 데이터셋 미발견 시 `raise FileNotFoundError`(랜덤 학습 제거).
 - `app/workers/inference_worker.py` — 모드1: 모델 미발견 `raise FileNotFoundError`, 입력 없음 `raise ValueError`(랜덤 모델·노이즈 진단 제거). 모드2: `MedfusionService` 사용. 미사용 import(`torch`, `ProtoEncoderConv4`, `create_synthetic_noise_image`) 정리.
 - `app/services/protonet_service.py` — `train_few_shot`를 정식 에피소드 few-shot으로 재작성(§8), 인코더 채널을 `settings.CHANNELS`로, `predict` 전처리를 채널 인식형으로.
@@ -160,15 +176,18 @@ Medfusion 디코더 출력은 `settings.CHANNELS`(1|3)에 맞춰 흑백/RGB PIL�
 |---|---|---|
 | `DEVICE` | `auto` | `auto|cuda|cpu|mps` |
 | `IMAGE_SIZE` | `128` | 생성/전처리 해상도 |
-| `CHANNELS` | `1` | **1=흑백, 3=RGB.** 데이터셋 npz·진단 전처리·생성 출력 채널을 일괄 결정 |
+| `CHANNELS` | `3` | **1=흑백, 3=RGB.** 데이터셋 npz·진단 전처리·생성 출력 채널 일괄 결정. eye VAE라 기본 RGB |
 | `BIFUSION_PACKAGE_PATH` | (로컬 절대경로) | 생성 로직이 담긴 `bifusion` 패키지(`Bifusion_pip-version-Med`) 폴더(→`sys.path`) |
 | `MEDFUSION_CODE_PATH` | (로컬 절대경로) | `medical_diffusion` 소스 디렉터리(→`sys.path`) |
 | `MEDFUSION_WEIGHTS_DIR` | (로컬 절대경로) | 아래 ckpt 상대경로의 기준 디렉터리 |
-| `MEDFUSION_DIFFUSION_CKPT` | `runs/chest_diffusion/last.ckpt` | diffusion 체크포인트 |
-| `MEDFUSION_VAE_CKPT` | `runs/2022_12_12_133315_chest_vaegan/last_vae.ckpt` | VAE 체크포인트 |
-| `MEDFUSION_LATENT_SHAPE` | `8,32,32` | latent (C,H,W) |
+| `MEDFUSION_DIFFUSION_CKPT` | `runs/eye_diffusion/last.ckpt` | diffusion 체크포인트(eye) |
+| `MEDFUSION_VAE_CKPT` | `runs/2022_12_12_224914_eye_vaegan/last_vae.ckpt` | VAE 체크포인트(eye, 범용) |
+| `MEDFUSION_LATENT_SHAPE` | `4,32,32` | latent (C,H,W) — eye VAE는 4채널 |
 | `MEDFUSION_GUIDANCE_SCALE` | `4.0` | classifier-free guidance 강도 |
-| `MEDFUSION_STEPS` | `50` | 기본 샘플링 스텝(요청이 없을 때) |
+| `MEDFUSION_STEPS` | `50` | 기본 샘플링/디노이즈 스텝 |
+| `MEDFUSION_FINETUNE_STEPS` | `400` | 증강 시 업로드별 UNet 파인튜닝 스텝(VAE 동결) |
+| `MEDFUSION_FINETUNE_LR` | `1e-4` | 파인튜닝 학습률 |
+| `MEDFUSION_STRENGTH` | `0.3` | img2img 노이즈 비율(낮을수록 원본 밀착=보존성↑) |
 | `MODEL_LOADER` | `local` | `local|s3` |
 | `MODEL_DIR` / `MODEL_CACHE_DIR` | `models` / `/tmp/models` | 체크포인트 경로/캐시 |
 | `STORAGE_BACKEND` | `local` | `local|s3` |
@@ -225,9 +244,9 @@ Medfusion 디코더 출력은 `settings.CHANNELS`(1|3)에 맞춰 흑백/RGB PIL�
 
 ## 9. 알려진 한계 / 후속 작업 (기획·QA·후임 에이전트용)
 
-1. **현재 생성은 무조건부(unconditional)이며 고정 사전학습 모델**이다. Medfusion `chest` 가중치를 그대로 쓰므로, **사용자가 업로드한 배치를 닮은** 샘플이 아니라 **일반 흉부 X-ray 계열** 이미지를 만든다. "업로드 데이터에 맞춘 조건부 생성 / 업로드마다 UNet만 파인튜닝(VAE 동결)"은 **미구현(정식안)**. 데모/QA 시 이 점을 인지할 것.
-2. **`CHANNELS` 기본값 1(흑백)**. 이 프로젝트의 방향은 "생의학 이미지의 색/원본 보존(fidelity-first)"이므로 컬러가 중요하면 `CHANNELS=3`으로 두는 것을 검토(단, 생성 가중치/학습/진단 전 구간 일관 필요).
-3. **증강 워커의 빈 입력 방어**: 원본이 0장이면 `create_synthetic_noise_image`로 채워 진행한다(fail-loud 아님). 다른 워커들과 정책을 통일할지 미결.
+1. **증강은 업로드 기반(fidelity-first)으로 구현됨**(§3.5). 업로드로 UNet을 파인튜닝한 뒤 img2img → **업로드에 충실한 변주본**. 단 (a) 생성 품질은 파인튜닝 스텝·`MEDFUSION_STRENGTH`에 민감하고, (b) **증강 잡마다 클래스별 파인튜닝(수십 초/GPU)** 이 붙어 지연이 증가한다. 디폴트(400스텝/strength0.3)는 혈액에서 검증됨 — 모달리티에 따라 튜닝 여지.
+2. **VAE 복원 천장**: eye VAE가 색은 보존하나 아주 미세한 질감은 다소 부드러워질 수 있다(blood ~27.7dB). 파인튜닝 + 낮은 strength로 원본 밀착도를 높인다. 새 모달리티는 필요 시 같은 복원 테스트로 천장 확인.
+3. **`CHANNELS` 기본 3(RGB)**. eye VAE가 색을 보존하므로 기본 RGB. 흑백만 쓸 거면 1 가능하되 **생성·학습·진단 전 구간 일관** 필수.
 4. **`/tmp/models` 사용**: 학습은 `/tmp/models/{job_id}/best.pt`에 쓰고 진단이 그 경로를 탐색한다. 리눅스 컨테이너면 OK, 로컬 Windows 개발 시 경로 유의.
 
 ---
@@ -253,19 +272,24 @@ Medfusion 디코더 출력은 `settings.CHANNELS`(1|3)에 맞춰 흑백/RGB PIL�
 ```dotenv
 DEVICE=auto
 IMAGE_SIZE=128
-CHANNELS=1                 # 1=grayscale, 3=RGB
+CHANNELS=3                 # 1=grayscale, 3=RGB (eye VAE는 RGB)
 
 # 생성 로직이 담긴 bifusion 패키지 경로 (웹앱이 sys.path에 추가해 import)
 BIFUSION_PACKAGE_PATH=/opt/Bifusion_pip-version-Med
 
-# Medfusion (유일한 생성 백엔드) — 배포 시 컨테이너 내부 경로로 반드시 교체
+# Medfusion (유일한 생성 백엔드) — eye(fundus) VAE 단일 범용. 배포 시 경로 교체
 MEDFUSION_CODE_PATH=/opt/medical_diffusion
 MEDFUSION_WEIGHTS_DIR=/opt/medfusion_weights
-MEDFUSION_DIFFUSION_CKPT=runs/chest_diffusion/last.ckpt
-MEDFUSION_VAE_CKPT=runs/2022_12_12_133315_chest_vaegan/last_vae.ckpt
-MEDFUSION_LATENT_SHAPE=8,32,32
+MEDFUSION_DIFFUSION_CKPT=runs/eye_diffusion/last.ckpt
+MEDFUSION_VAE_CKPT=runs/2022_12_12_224914_eye_vaegan/last_vae.ckpt
+MEDFUSION_LATENT_SHAPE=4,32,32
 MEDFUSION_GUIDANCE_SCALE=4.0
 MEDFUSION_STEPS=50
+
+# 증강: per-upload 파인튜닝(fidelity-first)
+MEDFUSION_FINETUNE_STEPS=400
+MEDFUSION_FINETUNE_LR=0.0001
+MEDFUSION_STRENGTH=0.3
 
 MODEL_LOADER=local
 MODEL_DIR=models
