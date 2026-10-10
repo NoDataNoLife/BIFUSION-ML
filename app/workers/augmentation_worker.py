@@ -35,6 +35,9 @@ def run_augmentation(self, request: dict) -> Dict[str, Any]:
 
     num_samples_per_class = request.get("num_samples_per_class", 10)
     seed = request.get("seed", None)
+    strength = request.get("strength")              # None=서버 기본(MEDFUSION_STRENGTH)
+    finetune_steps = request.get("finetune_steps")  # None=서버 기본(MEDFUSION_FINETUNE_STEPS)
+    steps = request.get("steps")                    # None=서버 기본(MEDFUSION_STEPS)
 
     storage = get_storage_service()
 
@@ -88,11 +91,13 @@ def run_augmentation(self, request: dict) -> Dict[str, Any]:
 
     # 4. 클래스별 per-upload 파인튜닝 + img2img 증강 (각 클래스는 자기 업로드로 특화)
     syn_normal = generator.augment_with_finetune(
-        normal_imgs, num_outputs=num_samples_per_class, seed=seed,
+        normal_imgs, num_outputs=num_samples_per_class,
+        strength=strength, finetune_steps=finetune_steps, steps=steps, seed=seed,
         progress_callback=make_cb(10, 50, "Normal"),
     )
     syn_anomaly = generator.augment_with_finetune(
-        anomaly_imgs, num_outputs=num_samples_per_class, seed=seed,
+        anomaly_imgs, num_outputs=num_samples_per_class,
+        strength=strength, finetune_steps=finetune_steps, steps=steps, seed=seed,
         progress_callback=make_cb(50, 90, "Anomaly"),
     )
     synthetic_images = syn_normal + syn_anomaly

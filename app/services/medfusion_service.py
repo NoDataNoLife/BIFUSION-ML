@@ -88,6 +88,7 @@ class MedfusionService:
         finetune_steps: Optional[int] = None,
         lr: Optional[float] = None,
         strength: Optional[float] = None,
+        steps: Optional[int] = None,
         seed: Optional[int] = None,
         progress_callback: Optional[Callable[[int, int, int], None]] = None,
     ) -> List[Image.Image]:
@@ -107,6 +108,7 @@ class MedfusionService:
             mode="img2img",
             strength=float(strength if strength is not None else settings.MEDFUSION_STRENGTH),
             num_variations_per_image=v,
+            steps=(int(steps) if steps is not None else None),
             seed=seed,
             restore=True,
             progress_callback=progress_callback,

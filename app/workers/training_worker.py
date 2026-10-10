@@ -33,6 +33,9 @@ def run_training(self, request: dict) -> Dict[str, Any]:
     dataset_id = request.get("dataset_id")
     k_shot = request.get("k_shot", 5)
     epochs = request.get("epochs", 30)
+    q_query = request.get("q_query", 5)
+    episodes_per_epoch = request.get("episodes_per_epoch", 10)
+    seed = request.get("seed", 42)
 
     storage = get_storage_service()
 
@@ -80,6 +83,9 @@ def run_training(self, request: dict) -> Dict[str, Any]:
         epochs=epochs,
         out_model_path=out_model_path,
         progress_callback=on_progress,
+        q_query=q_query,
+        episodes_per_epoch=episodes_per_epoch,
+        seed=seed,
     )
 
     # 5. 모델 가중치를 StorageService에 저장
