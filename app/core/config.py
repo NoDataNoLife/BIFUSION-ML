@@ -11,14 +11,14 @@ class Settings(BaseSettings):
     IMAGE_SIZE: int = 128
     CHANNELS: int = 3                 # 1=grayscale, 3=RGB. eye VAE는 RGB(색 보존)
 
-    # 생성 로직이 담긴 bifusion 패키지(Bifusion_pip-version-Med) 경로.
-    # 웹앱은 이 경로를 sys.path에 추가해 `bifusion`을 import한다(pip 설치 대신).
-    BIFUSION_PACKAGE_PATH: str = r"C:\Users\tjdgk\Desktop\My\PBL\Bifusion_pip-version-Med"
+    # 아래 경로 기본값은 배포(리눅스) 기준 placeholder다. 실제 값은 .env 로 덮어쓴다.
+    # 생성 로직이 담긴 bifusion 패키지(version-Med) 경로. sys.path에 추가해 import.
+    BIFUSION_PACKAGE_PATH: str = "/workspace/bifusion-pip"
 
     # Medfusion (유일한 생성 백엔드) — eye(fundus) VAE 단일 범용(RGB·회색조 모두 처리).
     # 실제 생성은 bifusion.generate.medfusion 이 담당.
-    MEDFUSION_CODE_PATH: str = r"C:\Users\tjdgk\Desktop\My\PBL\medfusion_code"
-    MEDFUSION_WEIGHTS_DIR: str = r"C:\Users\tjdgk\Desktop\My\PBL\medfusion_weights"
+    MEDFUSION_CODE_PATH: str = "/workspace/medical_diffusion"
+    MEDFUSION_WEIGHTS_DIR: str = "/workspace/medfusion_weights"
     MEDFUSION_DIFFUSION_CKPT: str = "runs/eye_diffusion/last.ckpt"
     MEDFUSION_VAE_CKPT: str = "runs/2022_12_12_224914_eye_vaegan/last_vae.ckpt"
     MEDFUSION_LATENT_SHAPE: str = "4,32,32"   # eye VAE latent (emb=4)

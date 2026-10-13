@@ -127,7 +127,7 @@ Medfusion 디코더 출력은 `settings.CHANNELS`(1|3)에 맞춰 흑백/RGB PIL�
 - [ ] **`bifusion` 패키지(`Bifusion_pip-version-Med`) 이미지에 포함**: `BIFUSION_PACKAGE_PATH`를 컨테이너 내부 경로로 지정하고 그 폴더를 `COPY`/마운트하거나, 이미지 빌드 시 `pip install -e /path/Bifusion_pip-version-Med[medfusion]`로 설치. 이게 없으면 워커가 `import bifusion`에서 즉시 실패한다.
 - [ ] **`medical_diffusion` 코드 이미지에 포함**: `MEDFUSION_CODE_PATH`가 컨테이너 내부 경로를 가리키게 하고, 그 경로에 코드를 `COPY` 하거나 볼륨 마운트. (pip 설치 아님)
 - [ ] **가중치 마운트**: `MEDFUSION_WEIGHTS_DIR`를 컨테이너 경로로 지정하고 ckpt 2개를 마운트/복사. `docker-compose.yml`의 `volumes:`에 현재는 `./models:/app/models`만 있음 → **가중치·코드 볼륨 추가 필요.**
-- [ ] **env 경로 교체**: `app/core/config.py`의 `MEDFUSION_CODE_PATH`/`MEDFUSION_WEIGHTS_DIR` 기본값은 **개발자 로컬 Windows 절대경로**(`C:\Users\tjdgk\...`)다. 배포 `.env`에서 리눅스 경로로 덮어써야 함.
+- [ ] **env 경로 설정**: `app/core/config.py`의 `BIFUSION_PACKAGE_PATH`/`MEDFUSION_CODE_PATH`/`MEDFUSION_WEIGHTS_DIR` 기본값은 `/workspace/...` placeholder다. 배포 `.env`에서 실제 설치 위치로 설정해야 함.
 - [ ] **torch(및 스택) 설치 환경 확인**: `Dockerfile`은 `python:3.11-slim`(CPU). Medfusion은 CPU로도 돌지만 매우 느리다. GPU 배포면 CUDA 베이스 이미지/런타임 필요.
 - [ ] **동시성 유지**: compose의 각 worker `--concurrency=1`(현재 그대로 OK). 특히 GPU 1장에 잡 2개가 동시에 뜨면 불안정(cuDNN 실패). **증강 잡은 이제 UNet 파인튜닝을 포함**해 GPU·시간을 더 쓰므로(클래스당 수십 초) 동시성 1 준수가 더 중요하다. 큐 분리(`augmentation`/`training`/`inference`)는 유지.
 - [ ] **GPU 권장**: 증강이 파인튜닝을 포함하므로 CPU 배포는 매우 느리다. 사실상 **CUDA 런타임 필요**.

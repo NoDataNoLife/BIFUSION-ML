@@ -19,6 +19,24 @@
 
 ---
 
+## 준비물 한눈에 (서버 세팅 전 확인)
+
+| 준비물 | 무엇인가 | git 포함? | 서버 위치 / 지정(env) |
+|---|---|---|---|
+| **BIFUSION-ML 코드** | FastAPI·Celery 워커(서비스 본체) | ✅ git clone | `/workspace/bifusion-ml` |
+| **bifusion 패키지** (version-Med) | 생성·분류 로직 — 서비스가 import | ✅ git clone | `/workspace/bifusion-pip` · `BIFUSION_PACKAGE_PATH` |
+| **medical_diffusion 코드 폴더** | Medfusion을 불러오고 실행하는 외부 코드 | ❌ **별도 업로드** | `/workspace/medical_diffusion` · `MEDFUSION_CODE_PATH` |
+| **eye diffusion `last.ckpt`** (2.3GB) | 학습된 이미지 생성 모델 | ❌ **별도 업로드(볼륨)** | `…/runs/eye_diffusion/last.ckpt` · `MEDFUSION_DIFFUSION_CKPT` |
+| **eye VAE `last_vae.ckpt`** (107MB) | 이미지↔latent 변환·복원 | ❌ **별도 업로드(볼륨)** | `…/runs/2022_12_12_224914_eye_vaegan/last_vae.ckpt` · `MEDFUSION_VAE_CKPT` |
+| **Python 의존성** | torch **cu128**(5090)·celery·redis·monai·lpips 등 | — (pip) | `pip install -r requirements.txt` + `pip install -e bifusion-pip` |
+| **Redis** | 작업 큐(broker) | — (apt) | `apt-get install redis-server` |
+
+- ⚠️ 가중치는 반드시 **eye** 것이어야 함(chest/patho 아님 — chest면 혈액 RGB가 회색조로 뭉개짐).
+- ❌ 표시(의 코드·가중치)는 **git에 없음** → 네트워크 볼륨에 업로드 후 env로 경로 지정. ✅ 표시만 git clone.
+- 설치·실행 상세는 아래 **PART B(B3~B6)**.
+
+---
+
 # PART A. 백엔드 연동 명세 (Spring 팀용)
 
 ## A1. 기본 규약
