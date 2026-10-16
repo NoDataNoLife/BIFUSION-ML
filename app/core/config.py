@@ -39,6 +39,8 @@ class Settings(BaseSettings):
     STORAGE_BACKEND: str = "local"  # local | s3
     LOCAL_STORAGE_DIR: str = "storage"
     S3_OUTPUT_PREFIX: str = "outputs"
+    # Publish augmentation NPZ/preview while keeping local training data.
+    AUGMENTATION_PUBLISH_S3: bool = False
 
     # S3 (프로덕션 전환 또는 STORAGE_BACKEND=s3 사용 시)
     AWS_ACCESS_KEY_ID: str = ""
