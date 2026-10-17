@@ -6,13 +6,14 @@ import numpy as np
 from PIL import Image
 
 from app.core.celery_app import celery_app
+from app.core.managed_task import ManagedTask
 from app.core.config import settings
 from app.services.medfusion_service import MedfusionService
 from app.services.storage_service import LocalStorageService, S3StorageService
 from app.services.image_utils import base64_to_pil
 
 
-@celery_app.task(bind=True, name="app.workers.augmentation_worker.run_augmentation")
+@celery_app.task(bind=True, base=ManagedTask, name="app.workers.augmentation_worker.run_augmentation")
 def run_augmentation(self, request: dict) -> Dict[str, Any]:
     """
     JOB-001: 데이터 증강 Worker (fidelity-first)
@@ -171,7 +172,6 @@ def run_augmentation(self, request: dict) -> Dict[str, Any]:
         dataset_url = publisher.get_url(artifacts["download"]["key"])
         preview_url = publisher.get_url(artifacts["preview"]["key"])
 
-    safe_update_state(state="SUCCESS", meta={"progress": 100})
 
     return {
         "job_id": job_id,

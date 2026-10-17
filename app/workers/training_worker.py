@@ -4,12 +4,13 @@ from pathlib import Path
 from typing import Dict, Any
 
 from app.core.celery_app import celery_app
+from app.core.managed_task import ManagedTask
 from app.core.config import settings
 from app.services.protonet_service import ProtoNetService
 from app.services.storage_service import get_storage_service
 
 
-@celery_app.task(bind=True, name="app.workers.training_worker.run_training")
+@celery_app.task(bind=True, base=ManagedTask, name="app.workers.training_worker.run_training")
 def run_training(self, request: dict) -> Dict[str, Any]:
     """
     JOB-002: ProtoNet 퓨샷 모델 학습 Worker
@@ -92,7 +93,6 @@ def run_training(self, request: dict) -> Dict[str, Any]:
     model_key = f"models/{job_id}/best.pt"
     model_url = storage.save_file(out_model_path, model_key, content_type="application/octet-stream")
 
-    safe_update_state(state="SUCCESS", meta={"progress": 100})
 
     return {
         "job_id": job_id,

@@ -4,6 +4,7 @@ from typing import Dict, Any, List
 from PIL import Image
 
 from app.core.celery_app import celery_app
+from app.core.managed_task import ManagedTask
 from app.core.config import settings
 from app.services.medfusion_service import MedfusionService
 from app.services.protonet_service import ProtoNetService
@@ -11,7 +12,7 @@ from app.services.storage_service import get_storage_service
 from app.services.image_utils import base64_to_pil
 
 
-@celery_app.task(bind=True, name="app.workers.inference_worker.run_inference")
+@celery_app.task(bind=True, base=ManagedTask, name="app.workers.inference_worker.run_inference")
 def run_inference(self, request: dict) -> Dict[str, Any]:
     """
     JOB-003: 모델 추론/진단 Worker
@@ -79,7 +80,6 @@ def run_inference(self, request: dict) -> Dict[str, Any]:
         protonet = ProtoNetService()
         predictions = protonet.predict(model_checkpoint_path=model_path, images=pil_images)
 
-        safe_update_state(state="SUCCESS", meta={"progress": 100})
 
         return {
             "job_id": job_id,
@@ -129,7 +129,6 @@ def run_inference(self, request: dict) -> Dict[str, Any]:
         preview_key = f"inferences/{job_id}/preview_grid.png"
         preview_url = storage.save_image(preview_img, preview_key)
 
-        safe_update_state(state="SUCCESS", meta={"progress": 100})
 
         return {
             "job_id": job_id,
