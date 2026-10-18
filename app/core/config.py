@@ -57,6 +57,9 @@ class Settings(BaseSettings):
     # DB (job 상태 저장)
     DATABASE_URL: str = "postgresql://user:password@localhost:5432/bifusion"
 
+    # Security (X-API-Key)
+    API_KEY: str = ""
+
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
 

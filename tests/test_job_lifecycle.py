@@ -18,6 +18,8 @@ client = TestClient(app)
 
 @pytest.fixture(autouse=True)
 def registry(monkeypatch):
+    monkeypatch.setattr("app.main.settings.API_KEY", "secret-test-key")
+    monkeypatch.setitem(client.headers, "X-API-Key", "secret-test-key")
     db = fakeredis.FakeRedis(decode_responses=True)
     monkeypatch.setattr(job_registry, "connection", lambda: db)
     return db
