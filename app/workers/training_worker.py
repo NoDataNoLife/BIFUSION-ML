@@ -7,7 +7,7 @@ from app.core.celery_app import celery_app
 from app.core.managed_task import ManagedTask
 from app.core.config import settings
 from app.services.protonet_service import ProtoNetService
-from app.services.storage_service import get_storage_service
+from app.services.storage_service import LocalStorageService, S3StorageService
 
 
 @celery_app.task(bind=True, base=ManagedTask, name="app.workers.training_worker.run_training")
@@ -38,7 +38,15 @@ def run_training(self, request: dict) -> Dict[str, Any]:
     episodes_per_epoch = request.get("episodes_per_epoch", 10)
     seed = request.get("seed", 42)
 
-    storage = get_storage_service()
+    # Inference must retain a local checkpoint even when publishing downloads.
+    storage = LocalStorageService()
+    publish_s3 = settings.TRAINING_PUBLISH_S3 or settings.STORAGE_BACKEND.lower() == "s3"
+    if publish_s3:
+        if not (settings.AWS_S3_BUCKET_NAME or settings.MODEL_S3_BUCKET):
+            raise ValueError("S3 publication requires AWS_S3_BUCKET_NAME or MODEL_S3_BUCKET")
+        if settings.S3_OUTPUT_PREFIX != "ml-results":
+            raise ValueError("Training publication requires S3_OUTPUT_PREFIX=ml-results")
+    publisher = S3StorageService() if publish_s3 else None
 
     # 1. 데이터셋 파일 위치 탐색
     possible_paths = [
@@ -93,12 +101,21 @@ def run_training(self, request: dict) -> Dict[str, Any]:
     model_key = f"models/{job_id}/best.pt"
     model_url = storage.save_file(out_model_path, model_key, content_type="application/octet-stream")
 
+    # Upload a copy; BE signs downloads using this durable metadata.
+    artifacts = None
+    if publisher is not None:
+        artifacts = {
+            "download": publisher.upload_artifact(
+                model_url, model_key, "application/octet-stream"
+            )
+        }
 
     return {
         "job_id": job_id,
         "status": "SUCCESS",
         "model_id": job_id,
         "model_url": model_url,
+        "artifacts": artifacts,
         "dataset_id": dataset_id,
         "k_shot": k_shot,
         "metrics": train_result.get("metrics", {}),

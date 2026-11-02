@@ -134,16 +134,20 @@
   - 학습/진단: 수 초.
 - **동시 요청**: 단일 GPU라 증강은 **순서대로 처리(큐)** 됩니다. 5명이 동시에 제출하면 마지막 사람은 앞 작업이 끝날 때까지 대기 → **UI에 "대기/진행률"** 를 꼭 보여주세요. (자세한 처리량은 Part B 운영 노트)
 
-## A5. ⚠️ 생성 결과 파일 전달 (반드시 협의)
+## A5. 생성 결과 파일 전달
 
-현재 ML 서비스는 `STORAGE_BACKEND=local` 이라, 생성된 이미지·npz가 **서버 디스크**에 저장되고 `dataset_url`/`preview_url`/`model_url` 은 **서버 내부 경로**입니다. 즉 **웹에서 그 URL을 바로 열 수 없습니다.** 둘 중 하나 필요:
-- (권장) **S3 저장으로 전환**(`STORAGE_BACKEND=s3`) → URL이 S3 주소가 되어 프론트가 바로 사용. (백엔드 S3가 이미 있으니 버킷·키만 공유)
-- 또는 ML 서비스가 그 파일을 **정적으로 내려주는 엔드포인트** 추가.
+현재 작업 브랜치의 증강은 NPZ·PNG·meta.json을 로컬에 보존하고, S3 게시를 켜면 NPZ·PNG를 추가 업로드합니다. 다음 학습은 로컬 NPZ를 사용합니다.
 
-→ **백엔드/ML이 이 부분을 먼저 정해야** 프론트가 결과 이미지를 표시할 수 있습니다.
+- 권장 설정: `STORAGE_BACKEND=local` + `AUGMENTATION_PUBLISH_S3=true`.
+- `AWS_S3_BUCKET_NAME`, `AWS_REGION`, `S3_OUTPUT_PREFIX`와 업로드 인증·권한을 별도로 설정합니다.
+- BE는 `result.artifacts.download`와 `result.artifacts.preview`의 `bucket`, `key`, `size_bytes`를 저장하고 필요할 때 파일 접근 링크를 발급하는 방향입니다. 기존 URL은 S3 게시 시 임시 링크입니다.
+- S3 게시 기본값은 false입니다. 로컬 모드의 내부 경로는 브라우저에서 직접 열 수 없습니다.
+- 학습·추론 저장 방식은 이번 변경 대상이 아닙니다.
+- 코드 구현과 실제 서버 검증은 별개입니다. 현재 RunPod·AWS 검증 전이며, BE의 artifacts 수신 처리는 추가 연동이 필요합니다.
+
+설정·검증 절차와 BE 대조 결과는 [AUGMENTATION_S3_RESULTS.md](AUGMENTATION_S3_RESULTS.md), 취소·동시 배포 주의사항은 [JOB_CANCELLATION.md](JOB_CANCELLATION.md)를 확인합니다.
 
 ---
-
 # PART B. 서버 AI 세팅 (RunPod · RTX 5090)
 
 ## B1. ⚠️ 5090 호환성 (제일 먼저)
@@ -205,7 +209,8 @@ MEDFUSION_FINETUNE_LR=0.0001
 MEDFUSION_STRENGTH=0.3
 
 REDIS_URL=redis://localhost:6379/0
-STORAGE_BACKEND=local          # (웹 표시 필요 시 s3로 전환 — A5 참고)
+STORAGE_BACKEND=local
+AUGMENTATION_PUBLISH_S3=false  # S3 설정·권한 준비 후 true — A5 참고
 LOCAL_STORAGE_DIR=/workspace/storage
 ```
 

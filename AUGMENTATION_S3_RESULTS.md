@@ -69,3 +69,13 @@ RunPod 접근 복구 후 이 브랜치의 버전을 시험 서버에 적용하�
 4. BE에서 미리보기·다운로드 링크를 발급해 파일 확인.
 
 현재 자동 배포는 추가하지 않았으므로 Git 병합만으로 RunPod에 반영되지는 않습니다.
+## 2026-10-17 BE 코드 대조
+
+기준: ML `f43e3bd`, BE `origin/develop`의 `2f8c147`. 소스 확인이며 운영 배포·실제 연동 성공을 뜻하지 않습니다.
+
+- BE `MlAugmentationResult`는 기존 `dataset_url`, `preview_url`과 최상위 `dataset_key`, `preview_key`, `bucket`을 받습니다. 중첩된 `artifacts` 및 `size_bytes` 수신 필드는 아직 없습니다.
+- BE `JobPollingServiceImpl`은 변환한 저장 키를 기록합니다. `MlJobPoller`는 S3 HEAD 요청으로 파일 정보를 확인하는 경로가 있습니다. 따라서 artifacts 미지원만으로 기존 URL 방식도 모두 실패한다고 단정하지 않습니다.
+- 다음 연동은 BE에서 `artifacts.download/preview`를 읽고 허용된 버킷인지 확인한 뒤 저장하는 것입니다. 기존 URL 처리와의 호환 및 파일 크기 검증은 BE 담당자와 맞춥니다.
+- RunPod 접근과 새 S3 설정은 아직 전달받지 못했습니다. 실제 업로드·다운로드 검증은 미실시입니다.
+
+실서버 검증은 두 단계로 구분합니다. 먼저 ML API만 직접 호출해 로컬 파일 보존, S3 객체 존재·크기·다운로드, 같은 dataset_id의 학습 입력을 확인합니다. 그다음 BE 링크 발급과 FE 표시를 검증합니다. FE 연결은 ML 단독 검증의 선행 조건이 아닙니다.

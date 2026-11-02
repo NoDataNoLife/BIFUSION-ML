@@ -53,3 +53,23 @@ python -m pytest tests/test_job_lifecycle.py tests/test_api_endpoints.py tests/t
 ```
 
 Redis는 테스트용 대체 구현으로 검증합니다. 실제 GPU·AWS·실서버 Redis 검증은 별도입니다.
+
+## 2026-10-17 BE·FE 연결 준비
+
+BE `origin/develop`의 `2f8c147` 소스 기준입니다. 운영 배포와 환경변수 적용 여부는 확인하지 않았습니다.
+
+| FE → BE 요청 | 본문 | 주요 처리 |
+| --- | --- | --- |
+| POST `/api/v1/jobs/{jobId}/cancel` | 없음 | 작업 생성자 또는 프로젝트 관리자. 409이면 GET으로 상태 재조회 |
+| POST `/api/v1/jobs/{jobId}/retry` | 없음 | `retryable=true`일 때 같은 설정·입력으로 새 작업 생성 |
+| GET `/api/v1/jobs/{jobId}` | 없음 | BE에 저장된 상태·결과 조회 |
+
+FE는 BE의 숫자 jobId를 사용합니다. BE가 ML의 문자열 job_id로 변환하여 호출합니다. 재시도는 선택 헤더 `Idempotency-Key`(중복 실행 방지 키)를 지원하며, 새 재시도에는 새 키를 쓰고 같은 요청의 네트워크 재전송에는 같은 키를 사용합니다. 성공 응답은 BE의 `CommonResponse<JobResponse>`입니다.
+
+- BE 취소 활성화 설정 `ML_CANCEL_ENABLED`의 기본값은 false이며, 비활성화 상태에서는 새 취소 요청에 503 `J016`을 반환합니다. 이미 취소된 작업은 현재 상태를 반환합니다.
+- BE는 ML의 404와 `detail.error_code=JOB_NOT_FOUND`를 함께 검사합니다. 기본 경로 404와 구분하는 점은 현재 ML 구현과 맞습니다.
+- 주의: ML은 RUNNING도 409로 거절하지만 BE는 ML 취소의 모든 409를 `J014`(이미 끝났다는 문구)로 변환합니다. 실제로는 실행 중일 수도 있으므로 BE 문구를 “이미 시작되었거나 종료되어 취소할 수 없습니다”로 맞추는 협의가 필요합니다. FE는 409 후 상태를 재조회해야 합니다.
+- ML의 410 `JOB_RESULT_EXPIRED`는 BE에서 별도 분류하지 않고 일반 ML 응답 오류로 처리합니다. 결과 만료 시 BE 작업 상태를 어떻게 확정할지 후속 합의가 필요합니다.
+- 최신 FE `origin/main`의 `df7aa3e`에서 취소·재시도 경로 및 `retryable` 사용은 검색되지 않았습니다. FE 설정·상태 정리 PR #61의 병합은 확인했지만, 배포 사이트 반영은 확인하지 않았습니다.
+
+배포 순서: 기존 ML 작업 종료 및 새 접수 차단 → API·모든 작업자 동시 교체 → ML 단독 취소·조회 검증 → BE 취소 활성화 및 연동 시험. 실제 서버를 확인하기 전에는 이 순서를 실행하거나 자동 배포가 준비됐다고 간주하지 않습니다.
