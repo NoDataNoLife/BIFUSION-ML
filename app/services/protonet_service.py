@@ -81,13 +81,25 @@ class ProtoNetService:
         epochs: int = 30,
         out_model_path: Optional[str] = None,
         progress_callback: Optional[Callable[[int, int, int], None]] = None,
+        q_query: int = 5,
+        episodes_per_epoch: int = 10,
+        seed: int = 42,
     ) -> Dict[str, Any]:
         """
-        증강된 .npz 데이터셋을 기반으로 ProtoNet 분류기 학습
+        증강된 .npz 데이터셋 기반 ProtoNet few-shot 학습 (정식 에피소드).
+
+        - support/query를 disjoint하게 샘플해 학습(자기점수화 제거, k_shot 실제 사용)
+        - 층화(stratified) train/val 분할
+        - 검증: train support로 만든 프로토타입으로 전체 val을 채점하고,
+          best 저장 시 그 프로토타입을 함께 저장(predict 일관성 유지)
+
+        입출력/체크포인트 키(encoder_state_dict, prototypes, k_shot, metrics)는 불변.
         """
+        rng = np.random.default_rng(seed)
+
         data = np.load(npz_dataset_path, allow_pickle=True)
         X = data["x"]  # (N, 1, 128, 128) or (N, H, W)
-        y = data["y"]  # (N,)
+        y = np.asarray(data["y"]).reshape(-1)
 
         if X.ndim == 3:
             X = X[:, None, :, :]
@@ -97,45 +109,79 @@ class ProtoNetService:
         X_tensor = torch.tensor(X, dtype=torch.float32)
         y_tensor = torch.tensor(y, dtype=torch.long)
 
-        # Train/Val split (8:2)
-        num_samples = len(y)
-        indices = np.random.permutation(num_samples)
-        split = int(num_samples * 0.8)
-        tr_idx, val_idx = indices[:split], indices[split:]
+        classes = [0, 1]
+
+        # ---- 층화 train/val 분할 ----
+        tr_idx, val_idx = [], []
+        for c in classes:
+            idx = np.where(y == c)[0]
+            if len(idx) == 0:
+                raise ValueError(f"train_few_shot: class {c} has no samples in dataset")
+            rng.shuffle(idx)
+            n_tr = max(1, int(round(len(idx) * 0.8)))
+            tr_idx += list(idx[:n_tr])
+            val_idx += list(idx[n_tr:]) if len(idx) > 1 else list(idx[:1])
+        tr_idx = np.array(tr_idx)
+        val_idx = np.array(val_idx)
 
         X_tr, y_tr = X_tensor[tr_idx], y_tensor[tr_idx]
-        X_val, y_val = X_tensor[val_idx], y_tensor[val_idx]
+        X_val = X_tensor[val_idx].to(self.device)
+        y_val_np = y_tensor[val_idx].numpy()
+        y_tr_np = y_tr.numpy()
 
-        encoder = ProtoEncoderConv4(in_channels=1, hidden=64, out_dim=256).to(self.device)
+        # ---- 에피소드 인덱스 샘플러 (support/query disjoint, 소량 시 복원 폴백) ----
+        def sample_indices(n_support: int, n_query: int):
+            s_idx, q_idx = [], []
+            for c in classes:
+                idx = np.where(y_tr_np == c)[0]
+                rng.shuffle(idx)
+                need = n_support + n_query
+                if len(idx) >= need:
+                    pick = idx[:need]
+                else:
+                    pad = rng.choice(idx, size=need - len(idx), replace=True)
+                    pick = np.concatenate([idx, pad])
+                s_idx += list(pick[:n_support])
+                q_idx += list(pick[n_support:need])
+            return np.array(s_idx), np.array(q_idx)
+
+        encoder = ProtoEncoderConv4(in_channels=int(settings.CHANNELS), hidden=64, out_dim=256).to(self.device)
         optimizer = torch.optim.AdamW(encoder.parameters(), lr=1e-3, weight_decay=1e-4)
 
-        best_val_acc = 0.0
-        best_metrics = {}
+        best_val_acc = -1.0
+        best_metrics: Dict[str, Any] = {}
 
         for epoch in range(1, epochs + 1):
+            # ---- Train: 에피소드 support/query 분리 ----
             encoder.train()
-            # Support & Query 분할
-            X_tr_dev = X_tr.to(self.device)
-            y_tr_dev = y_tr.to(self.device)
+            epoch_loss = 0.0
+            for _ in range(episodes_per_epoch):
+                s_idx, q_idx = sample_indices(k_shot, q_query)
+                sup_x = X_tr[s_idx].to(self.device)
+                sup_y = y_tr[s_idx].to(self.device)
+                qry_x = X_tr[q_idx].to(self.device)
+                qry_y = y_tr[q_idx].to(self.device)
 
-            emb = encoder(X_tr_dev)
-            protos = compute_prototypes(emb, y_tr_dev, n_classes=2)
-            logits = compute_logits(emb, protos)
-            loss = F.cross_entropy(logits, y_tr_dev)
+                protos = compute_prototypes(encoder(sup_x), sup_y, n_classes=2)
+                logits = compute_logits(encoder(qry_x), protos)
+                loss = F.cross_entropy(logits, qry_y)
 
-            optimizer.zero_grad()
-            loss.backward()
-            optimizer.step()
+                optimizer.zero_grad()
+                loss.backward()
+                optimizer.step()
+                epoch_loss += loss.item()
 
-            # Validation
+            # ---- Validation: train support 프로토타입 → 전체 val ----
             encoder.eval()
             with torch.no_grad():
-                X_val_dev = X_val.to(self.device)
-                y_val_dev = y_val.to(self.device)
-                val_emb = encoder(X_val_dev)
-                val_logits = compute_logits(val_emb, protos)
+                sup_idx, _ = sample_indices(k_shot, 0)
+                protos_val = compute_prototypes(
+                    encoder(X_tr[sup_idx].to(self.device)),
+                    y_tr[sup_idx].to(self.device),
+                    n_classes=2,
+                )
+                val_logits = compute_logits(encoder(X_val), protos_val)
                 val_preds = val_logits.argmax(dim=-1).cpu().numpy()
-                y_val_np = y_val_dev.cpu().numpy()
 
                 acc = accuracy_score(y_val_np, val_preds)
                 f1 = f1_score(y_val_np, val_preds, zero_division=0)
@@ -151,14 +197,14 @@ class ProtoNetService:
                     "accuracy": round(float(acc), 4),
                     "f1_score": round(float(f1), 4),
                     "auroc": round(float(auc), 4),
-                    "loss": round(float(loss.item()), 4),
+                    "loss": round(float(epoch_loss / episodes_per_epoch), 4),
                     "epoch": epoch,
                 }
                 if out_model_path:
                     Path(out_model_path).parent.mkdir(parents=True, exist_ok=True)
                     torch.save({
                         "encoder_state_dict": encoder.state_dict(),
-                        "prototypes": protos.cpu(),
+                        "prototypes": protos_val.cpu(),
                         "k_shot": k_shot,
                         "metrics": best_metrics,
                     }, out_model_path)
@@ -181,20 +227,25 @@ class ProtoNetService:
         학습된 ProtoNet 모델을 사용해 새 이미지들을 정상(NORMAL) vs 비정상(ANOMALY)으로 진단
         """
         checkpoint = torch.load(model_checkpoint_path, map_location=self.device)
-        encoder = ProtoEncoderConv4(in_channels=1, hidden=64, out_dim=256).to(self.device)
+        encoder = ProtoEncoderConv4(in_channels=int(settings.CHANNELS), hidden=64, out_dim=256).to(self.device)
         encoder.load_state_dict(checkpoint["encoder_state_dict"])
         encoder.eval()
 
         prototypes = checkpoint["prototypes"].to(self.device)
 
-        # 이미지 전처리 (128x128 흑백 텐서)
+        # 이미지 전처리 (128x128, settings.CHANNELS 채널 텐서)
+        ch = int(settings.CHANNELS)
+        mode = "L" if ch == 1 else "RGB"
         tensors = []
         for img in images:
-            img_resized = img.convert("L").resize((128, 128))
+            img_resized = img.convert(mode).resize((128, 128))
             arr = np.array(img_resized, dtype=np.float32) / 255.0
-            tensors.append(torch.from_numpy(arr[None, :, :]))  # (1, 128, 128)
+            if ch == 1:
+                tensors.append(torch.from_numpy(arr[None, :, :]))            # (1, 128, 128)
+            else:
+                tensors.append(torch.from_numpy(np.transpose(arr, (2, 0, 1))))  # (3, 128, 128)
 
-        batch_tensor = torch.stack(tensors).to(self.device)  # (N, 1, 128, 128)
+        batch_tensor = torch.stack(tensors).to(self.device)  # (N, C, 128, 128)
 
         with torch.no_grad():
             embeddings = encoder(batch_tensor)

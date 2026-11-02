@@ -4,12 +4,13 @@ from pathlib import Path
 from typing import Dict, Any
 
 from app.core.celery_app import celery_app
+from app.core.managed_task import ManagedTask
 from app.core.config import settings
 from app.services.protonet_service import ProtoNetService
-from app.services.storage_service import get_storage_service
+from app.services.storage_service import LocalStorageService, S3StorageService
 
 
-@celery_app.task(bind=True, name="app.workers.training_worker.run_training")
+@celery_app.task(bind=True, base=ManagedTask, name="app.workers.training_worker.run_training")
 def run_training(self, request: dict) -> Dict[str, Any]:
     """
     JOB-002: ProtoNet 퓨샷 모델 학습 Worker
@@ -33,8 +34,19 @@ def run_training(self, request: dict) -> Dict[str, Any]:
     dataset_id = request.get("dataset_id")
     k_shot = request.get("k_shot", 5)
     epochs = request.get("epochs", 30)
+    q_query = request.get("q_query", 5)
+    episodes_per_epoch = request.get("episodes_per_epoch", 10)
+    seed = request.get("seed", 42)
 
-    storage = get_storage_service()
+    # Inference must retain a local checkpoint even when publishing downloads.
+    storage = LocalStorageService()
+    publish_s3 = settings.TRAINING_PUBLISH_S3 or settings.STORAGE_BACKEND.lower() == "s3"
+    if publish_s3:
+        if not (settings.AWS_S3_BUCKET_NAME or settings.MODEL_S3_BUCKET):
+            raise ValueError("S3 publication requires AWS_S3_BUCKET_NAME or MODEL_S3_BUCKET")
+        if settings.S3_OUTPUT_PREFIX != "ml-results":
+            raise ValueError("Training publication requires S3_OUTPUT_PREFIX=ml-results")
+    publisher = S3StorageService() if publish_s3 else None
 
     # 1. 데이터셋 파일 위치 탐색
     possible_paths = [
@@ -49,13 +61,11 @@ def run_training(self, request: dict) -> Dict[str, Any]:
             break
 
     if not npz_path:
-        import numpy as np
-        tmp_dir = Path("/tmp/datasets") / dataset_id
-        tmp_dir.mkdir(parents=True, exist_ok=True)
-        npz_path = str(tmp_dir / "support_aug.npz")
-        X = np.random.rand(30, 1, 128, 128).astype(np.float32)
-        y = np.array([0] * 15 + [1] * 15, dtype=np.int64)
-        np.savez_compressed(npz_path, x=X, y=y)
+        # 데이터셋 미발견 시 랜덤 노이즈로 학습해 "성공"으로 위장하지 않도록 명시적 실패
+        raise FileNotFoundError(
+            f"Dataset not found for dataset_id={dataset_id}. "
+            f"Searched: {[str(p) for p in possible_paths]}"
+        )
 
     # 2. 임시 모델 저장 경로
     out_model_dir = Path("/tmp/models") / job_id
@@ -82,19 +92,30 @@ def run_training(self, request: dict) -> Dict[str, Any]:
         epochs=epochs,
         out_model_path=out_model_path,
         progress_callback=on_progress,
+        q_query=q_query,
+        episodes_per_epoch=episodes_per_epoch,
+        seed=seed,
     )
 
     # 5. 모델 가중치를 StorageService에 저장
     model_key = f"models/{job_id}/best.pt"
     model_url = storage.save_file(out_model_path, model_key, content_type="application/octet-stream")
 
-    safe_update_state(state="SUCCESS", meta={"progress": 100})
+    # Upload a copy; BE signs downloads using this durable metadata.
+    artifacts = None
+    if publisher is not None:
+        artifacts = {
+            "download": publisher.upload_artifact(
+                model_url, model_key, "application/octet-stream"
+            )
+        }
 
     return {
         "job_id": job_id,
         "status": "SUCCESS",
         "model_id": job_id,
         "model_url": model_url,
+        "artifacts": artifacts,
         "dataset_id": dataset_id,
         "k_shot": k_shot,
         "metrics": train_result.get("metrics", {}),

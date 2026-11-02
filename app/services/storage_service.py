@@ -102,6 +102,17 @@ class S3StorageService(StorageService):
         self.s3.upload_file(str(local_path), self.bucket, s3_key, ExtraArgs=extra_args or None)
         return self.get_url(s3_key)
 
+    def upload_artifact(self, local_path: Union[str, Path], key: str, content_type: str) -> dict:
+        """Upload a local result and return durable metadata for BE persistence."""
+        path = Path(local_path)
+        s3_key = self._get_s3_key(key)
+        size_bytes = path.stat().st_size
+        self.s3.upload_file(
+            str(path), self.bucket, s3_key,
+            ExtraArgs={"ContentType": content_type},
+        )
+        return {"bucket": self.bucket, "key": s3_key, "size_bytes": size_bytes}
+
     def get_url(self, key: str) -> str:
         s3_key = self._get_s3_key(key)
         try:

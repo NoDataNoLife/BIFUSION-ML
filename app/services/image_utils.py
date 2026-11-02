@@ -6,11 +6,15 @@ import numpy as np
 
 
 def base64_to_pil(b64_str: str) -> Image.Image:
-    """Base64 문자열(data URI 포함 가능)을 PIL Image로 변환"""
+    """Base64 문자열(data URI 포함 가능)을 PIL Image로 변환.
+
+    색을 보존하기 위해 RGB로 반환한다(흑백 입력이면 3채널 복제). 채널(1|3)
+    변환은 소비자 측에서 settings.CHANNELS에 맞춰 수행한다.
+    """
     if "," in b64_str:
         b64_str = b64_str.split(",", 1)[1]
     img_data = base64.b64decode(b64_str)
-    img = Image.open(io.BytesIO(img_data)).convert("L")
+    img = Image.open(io.BytesIO(img_data)).convert("RGB")
     return img
 
 
