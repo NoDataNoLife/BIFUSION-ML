@@ -6,13 +6,14 @@ import numpy as np
 from PIL import Image
 
 from app.core.celery_app import celery_app
+from app.core.managed_task import ManagedTask
 from app.core.config import settings
 from app.services.medfusion_service import MedfusionService
-from app.services.storage_service import get_storage_service
+from app.services.storage_service import LocalStorageService, S3StorageService
 from app.services.image_utils import base64_to_pil
 
 
-@celery_app.task(bind=True, name="app.workers.augmentation_worker.run_augmentation")
+@celery_app.task(bind=True, base=ManagedTask, name="app.workers.augmentation_worker.run_augmentation")
 def run_augmentation(self, request: dict) -> Dict[str, Any]:
     """
     JOB-001: 데이터 증강 Worker (fidelity-first)
@@ -39,7 +40,12 @@ def run_augmentation(self, request: dict) -> Dict[str, Any]:
     finetune_steps = request.get("finetune_steps")  # None=서버 기본(MEDFUSION_FINETUNE_STEPS)
     steps = request.get("steps")                    # None=서버 기본(MEDFUSION_STEPS)
 
-    storage = get_storage_service()
+    # Training reads local files even when results are also published to S3.
+    storage = LocalStorageService()
+    publish_s3 = settings.AUGMENTATION_PUBLISH_S3 or settings.STORAGE_BACKEND.lower() == "s3"
+    if publish_s3 and not (settings.AWS_S3_BUCKET_NAME or settings.MODEL_S3_BUCKET):
+        raise ValueError("S3 publication requires AWS_S3_BUCKET_NAME or MODEL_S3_BUCKET")
+    publisher = S3StorageService() if publish_s3 else None
 
     # 1. 입력 이미지 파싱
     normal_raw = request.get("normal_images_base64", [])
@@ -155,12 +161,23 @@ def run_augmentation(self, request: dict) -> Dict[str, Any]:
     meta_key = f"datasets/{job_id}/meta.json"
     storage.save_bytes(json.dumps(meta, indent=2).encode("utf-8"), meta_key, content_type="application/json")
 
-    safe_update_state(state="SUCCESS", meta={"progress": 100})
+    # Keep local data; publish only download and preview artifacts.
+    artifacts = None
+    if publisher is not None:
+        artifacts = {
+            "download": publisher.upload_artifact(dataset_url, npz_key, "application/octet-stream"),
+            "preview": publisher.upload_artifact(preview_url, preview_key, "image/png"),
+        }
+        # Preserve existing URL fields; BE should persist artifacts instead.
+        dataset_url = publisher.get_url(artifacts["download"]["key"])
+        preview_url = publisher.get_url(artifacts["preview"]["key"])
+
 
     return {
         "job_id": job_id,
         "status": "SUCCESS",
         "dataset_id": job_id,
+        "artifacts": artifacts,
         "dataset_url": dataset_url,
         "preview_url": preview_url,
         "num_normal": len(all_normal),
